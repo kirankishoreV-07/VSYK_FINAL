@@ -1,142 +1,234 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform, RefreshControl } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Platform, RefreshControl, Dimensions, Animated, LayoutAnimation, UIManager, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
-import Svg, { Path, Rect } from 'react-native-svg';
+import Svg, { Path, Circle, Line, Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
+import { useRouter } from 'expo-router';
+import { formatPaise } from '../../lib/hooks/useDashboard';
+
+// Enable LayoutAnimation for Android
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+
+type GlobalSummary = {
+  totalCollections: number;
+  totalDividends: number;
+  activeGroups: number;
+};
+
+type CustomerAnalytics = {
+  customerId: string;
+  name: string;
+  totalPaid: number;
+  totalDividendsReceived: number;
+};
+
+type GroupAnalytics = {
+  id: string;
+  name: string;
+  value: number;
+  status: string;
+  totalCollected: number;
+  totalDividends: number;
+  progress: number;
+  customers: CustomerAnalytics[];
+};
 
 export default function AdminReports() {
-  const [activeTab, setActiveTab] = useState('Overview');
+  const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
-  const [summary, setSummary] = useState({ revenue: 0, dividend: 0, profit: 0 });
-  const [chartData, setChartData] = useState<{ labels: string[], data: { target: number, actual: number }[] }>({ labels: [], data: [] });
-  const [defaulters, setDefaulters] = useState<any[]>([]);
-  const [logs, setLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  
+  const [summary, setSummary] = useState<GlobalSummary>({ totalCollections: 0, totalDividends: 0, activeGroups: 0 });
+  const [groupsData, setGroupsData] = useState<GroupAnalytics[]>([]);
+  const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Chart State
+  const [chartData, setChartData] = useState<{
+    labels: string[],
+    points: { x: number, y: number, amount: number }[],
+    pathArea: string,
+    pathLine: string,
+    lastPoint: { x: number, y: number, amount: number } | null
+  }>({ labels: [], points: [], pathArea: '', pathLine: '', lastPoint: null });
+
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchReportsData = async () => {
+  const fetchAnalytics = async () => {
     try {
-      // 1. P&L Summary
-      const { data: deposits } = await supabase.from('wallet_transactions').select('amount, created_at').eq('type', 'credit');
-      const totalRev = deposits ? deposits.reduce((sum, d) => sum + Number(d.amount || 0), 0) : 0;
+      // 1. Fetch all groups
+      const { data: groups } = await supabase.from('chit_groups').select('*');
+      
+      // 2. Fetch all completed transactions with deep relationships
+      const { data: transactions } = await supabase
+        .from('chit_member_transactions')
+        .select(`
+          id, amount, payment_type, transaction_date, status,
+          chit_members (
+            id, chit_group_id,
+            customers (id, full_name)
+          )
+        `)
+        .eq('status', 'completed')
+        .order('transaction_date', { ascending: true });
 
-      const { data: dividendsTx } = await supabase.from('wallet_transactions').select('amount').ilike('description', '%dividend%');
-      const totalDiv = dividendsTx ? dividendsTx.reduce((sum, d) => sum + Number(d.amount || 0), 0) : 0;
+      if (!groups) return;
 
-      const { data: groups } = await supabase.from('chit_groups').select('value');
-      const totalGroupValue = groups ? groups.reduce((sum, g) => sum + Number(g.value || 0) / 100, 0) : 0;
-      const totalProfit = totalGroupValue * 0.05; // Assuming 5% standard foreman commission on total group value
+      let globalCollections = 0;
+      let globalDividends = 0;
+      const activeGroups = groups.filter(g => g.status === 'active' || g.status === 'upcoming').length;
 
-      setSummary({ revenue: totalRev, dividend: totalDiv, profit: totalProfit });
+      // Map to hold group analytics
+      const groupAnalyticsMap = new Map<string, GroupAnalytics>();
 
-      // 2. Monthly Trends Chart (Last 6 Months)
+      groups.forEach(g => {
+        groupAnalyticsMap.set(g.id, {
+          id: g.id,
+          name: g.name,
+          value: g.value,
+          status: g.status,
+          totalCollected: 0,
+          totalDividends: 0,
+          progress: 0,
+          customers: []
+        });
+      });
+
+      // Temporary map to aggregate customer data within groups: group_id -> customer_id -> CustomerAnalytics
+      const groupCustomerMap = new Map<string, Map<string, CustomerAnalytics>>();
+
+      if (transactions) {
+        transactions.forEach((tx: any) => {
+          const groupId = tx.chit_members?.chit_group_id;
+          const customerId = tx.chit_members?.customers?.id;
+          const customerName = tx.chit_members?.customers?.full_name || 'Unknown Member';
+          
+          if (!groupId || !customerId) return;
+
+          const group = groupAnalyticsMap.get(groupId);
+          if (!group) return;
+
+          // Track Global & Group Totals
+          if (tx.payment_type === 'installment') {
+            globalCollections += tx.amount;
+            group.totalCollected += tx.amount;
+          } else if (tx.payment_type === 'dividend') {
+            globalDividends += tx.amount;
+            group.totalDividends += tx.amount;
+          }
+
+          // Track Customer Totals
+          if (!groupCustomerMap.has(groupId)) {
+            groupCustomerMap.set(groupId, new Map());
+          }
+          const customersInGroup = groupCustomerMap.get(groupId)!;
+          
+          if (!customersInGroup.has(customerId)) {
+            customersInGroup.set(customerId, {
+              customerId, name: customerName, totalPaid: 0, totalDividendsReceived: 0
+            });
+          }
+          
+          const cust = customersInGroup.get(customerId)!;
+          if (tx.payment_type === 'installment') cust.totalPaid += tx.amount;
+          if (tx.payment_type === 'dividend') cust.totalDividendsReceived += tx.amount;
+        });
+      }
+
+      // Finalize Group Analytics Array
+      const finalGroupsArray: GroupAnalytics[] = [];
+      groupAnalyticsMap.forEach((group, groupId) => {
+        // Calculate Progress based on collections vs group value (approximate health metric)
+        // Usually, total expected = value * members. We just use a relative metric for UI flair.
+        const maxValueExpected = group.value * 10; // rough guess for progress bar scale
+        group.progress = Math.min((group.totalCollected / (maxValueExpected || 1)) * 100, 100);
+        
+        // Attach customer data
+        if (groupCustomerMap.has(groupId)) {
+          group.customers = Array.from(groupCustomerMap.get(groupId)!.values());
+        }
+        
+        finalGroupsArray.push(group);
+      });
+
+      // Sort groups: Active first, then by highest collections
+      finalGroupsArray.sort((a, b) => {
+        if (a.status === 'active' && b.status !== 'active') return -1;
+        if (a.status !== 'active' && b.status === 'active') return 1;
+        return b.totalCollected - a.totalCollected;
+      });
+
+      setSummary({ totalCollections: globalCollections, totalDividends: globalDividends, activeGroups });
+      setGroupsData(finalGroupsArray);
+
+      // --- Process Chart Data (Last 6 Months Collection Trends) ---
       const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
       const now = new Date();
-      const last6Months = [];
+      const last6Months: any[] = [];
       for (let i = 5; i >= 0; i--) {
         const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
         last6Months.push({
           label: monthNames[d.getMonth()],
           year: d.getFullYear(),
           month: d.getMonth(),
-          actual: 0,
-          target: 0
+          amount: 0
         });
       }
 
-      if (deposits) {
-        deposits.forEach(d => {
-          const date = new Date(d.created_at);
-          const m = last6Months.find(m => m.month === date.getMonth() && m.year === date.getFullYear());
-          if (m) m.actual += Number(d.amount || 0);
+      if (transactions) {
+        transactions.forEach((d: any) => {
+          if (d.payment_type === 'installment') {
+            const date = new Date(d.transaction_date);
+            const m = last6Months.find(m => m.month === date.getMonth() && m.year === date.getFullYear());
+            if (m) m.amount += Number(d.amount || 0);
+          }
         });
       }
 
-      const avgActual = last6Months.reduce((sum, m) => sum + m.actual, 0) / 6 || 50000;
-      last6Months.forEach(m => {
-        m.target = m.actual > 0 ? m.actual * 1.15 : avgActual; // Target is slightly higher than actual or avg
+      const maxAmount = Math.max(...last6Months.map(m => m.amount), 1); 
+      const width = SCREEN_WIDTH - 80;
+      const height = 160;
+      const paddingTop = 30;
+      const paddingBottom = 20;
+      const graphHeight = height - paddingTop - paddingBottom;
+
+      const points = last6Months.map((m, index) => {
+        const x = (index / 5) * width;
+        const y = height - paddingBottom - (m.amount / maxAmount) * graphHeight;
+        return { x, y, amount: m.amount };
       });
+
+      const pathArea = `M0 160 ${points.map(p => `L${p.x} ${p.y}`).join(' ')} L${width} 160 Z`;
+      const pathLine = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x} ${p.y}`).join(' ');
 
       setChartData({
         labels: last6Months.map(m => m.label),
-        data: last6Months.map(m => ({ target: m.target, actual: m.actual }))
+        points,
+        pathArea,
+        pathLine,
+        lastPoint: points[points.length - 1]
       });
 
-      // 3. Defaulters
-      const { data: unpaidSchedules } = await supabase
-        .from('payment_schedules')
-        .select(`
-          amount,
-          due_date,
-          chit_members (
-            user_id,
-            chit_groups ( name )
-          )
-        `)
-        .eq('paid', false)
-        .lt('due_date', new Date().toISOString());
-
-      if (unpaidSchedules && unpaidSchedules.length > 0) {
-        const userGroups = new Map();
-        unpaidSchedules.forEach((s: any) => {
-          const userId = s.chit_members?.user_id;
-          if (!userId) return;
-
-          if (!userGroups.has(userId)) {
-            userGroups.set(userId, {
-              id: userId,
-              groupName: s.chit_members?.chit_groups?.name || 'Unknown Group',
-              overdueAmount: 0,
-              monthsOverdue: 0,
-            });
-          }
-
-          const u = userGroups.get(userId);
-          u.overdueAmount += Number(s.amount) / 100;
-          u.monthsOverdue += 1;
-        });
-        setDefaulters(Array.from(userGroups.values()));
-      } else {
-        setDefaulters([]);
-      }
-
-      // 4. Audit Logs (Recent System Activity)
-      const { data: txLogs } = await supabase
-        .from('wallet_transactions')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(15);
-
-      if (txLogs) setLogs(txLogs);
-
     } catch (error) {
-      console.error('Error fetching reports data:', error);
+      console.error('Error fetching analytics:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await fetchReportsData();
-    setRefreshing(false);
-  };
-
-  const scheduleRefresh = () => {
-    if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => {
-      fetchReportsData();
-    }, 300);
-  };
-
   useEffect(() => {
-    fetchReportsData();
+    fetchAnalytics();
   }, []);
 
   useEffect(() => {
     const channel = supabase
-      .channel('admin-reports-updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'wallet_transactions' }, scheduleRefresh)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_schedules' }, scheduleRefresh)
+      .channel('admin-analytics')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_member_transactions' }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_groups' }, scheduleRefresh)
       .subscribe();
 
@@ -146,15 +238,29 @@ export default function AdminReports() {
     };
   }, []);
 
-  const formatCurrency = (amount: number) => {
-    return `₹${Math.round(amount).toLocaleString('en-IN')}`;
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchAnalytics();
+    setRefreshing(false);
   };
 
-  // Helper for rendering chart bars dynamically based on max value
-  const maxChartVal = Math.max(...chartData.data.map(d => Math.max(d.actual, d.target)), 1000);
-  const chartHeight = 120; // Maximum bar height
-  
-  const router = require('expo-router').useRouter();
+  const scheduleRefresh = () => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      fetchAnalytics();
+    }, 500);
+  };
+
+  const toggleGroup = (id: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    if (expandedGroup !== id) {
+      setSearchQuery(''); // clear search when opening a new group
+      setExpandedGroup(id);
+    } else {
+      setExpandedGroup(null);
+    }
+    Haptics.selectionAsync();
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -168,179 +274,183 @@ export default function AdminReports() {
           </TouchableOpacity>
           <Text style={styles.appBarTitle}>Reports & Analytics</Text>
         </View>
-        <View style={styles.appBarRight}>
-          <TouchableOpacity style={styles.exportBtn} onPress={() => Haptics.selectionAsync()}>
-            <Svg width={16} height={16} viewBox="0 0 24 24" fill="#005E7D">
-              <Path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
-            </Svg>
-            <Text style={styles.exportBtnText}>Export</Text>
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity style={styles.exportBtn} onPress={() => Haptics.selectionAsync()}>
+          <Svg width={16} height={16} viewBox="0 0 24 24" fill="#005E7D">
+            <Path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" />
+          </Svg>
+          <Text style={styles.exportBtnText}>Export</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Tabs */}
-      <View style={styles.tabContainer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabScroll}>
-          {['Overview', 'Defaulters', 'Audit Logs'].map((tab) => (
-            <TouchableOpacity
-              key={tab}
-              style={[styles.tab, activeTab === tab && styles.tabActive]}
-              onPress={() => { setActiveTab(tab); Haptics.selectionAsync(); }}
-            >
-              <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>{tab}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-
-      <ScrollView
+      <ScrollView 
         contentContainerStyle={styles.scrollContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#01789E" />}
         showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#005E7D" />}
       >
-
-        {activeTab === 'Overview' && (
-          <View>
-            {/* Profit & Loss Summary */}
-            <View style={styles.summaryCard}>
-              <Text style={styles.summaryTitle}>P&L Summary (YTD)</Text>
-
-              <View style={styles.summaryRow}>
-                <View style={styles.summaryCol}>
-                  <Text style={styles.summaryLabel}>Total Revenue</Text>
-                  <Text style={[styles.summaryVal, { color: '#005E7D' }]}>{formatCurrency(summary.revenue)}</Text>
-                </View>
-                <View style={styles.summaryCol}>
-                  <Text style={styles.summaryLabel}>Total Dividend</Text>
-                  <Text style={[styles.summaryVal, { color: '#0B1C30' }]}>{formatCurrency(summary.dividend)}</Text>
-                </View>
-              </View>
-
-              <View style={styles.netProfitBox}>
-                <Text style={styles.netProfitLabel}>Est. Commission Profit</Text>
-                <Text style={styles.netProfitVal}>{formatCurrency(summary.profit)}</Text>
-              </View>
-            </View>
-
-            {/* Monthly Trends Chart */}
-            <View style={styles.chartCard}>
-              <View style={styles.chartHeader}>
-                <Text style={styles.chartTitle}>Monthly Collections</Text>
-                <Text style={styles.chartSubtitle}>Target vs Actual</Text>
-              </View>
-
-              <View style={styles.chartContainer}>
-                <Svg width="100%" height={160} viewBox="0 0 300 160" preserveAspectRatio="none">
-                  {/* Grid */}
-                  <Path d="M0 40h300M0 80h300M0 120h300" stroke="#F1F5F9" strokeWidth="1" />
-
-                  {/* Dynamic Bars */}
-                  {chartData.data.map((d, index) => {
-                    const xOffset = 20 + (index * 50);
-                    // Invert height calculation (SVG y goes downwards from 0)
-                    const targetHeight = (d.target / maxChartVal) * chartHeight;
-                    const actualHeight = (d.actual / maxChartVal) * chartHeight;
-                    const targetY = 160 - targetHeight;
-                    const actualY = 160 - actualHeight;
-
-                    return (
-                      <React.Fragment key={index}>
-                        <Rect x={xOffset} y={targetY} width="16" height={targetHeight} fill="#E2E8F0" rx="4" />
-                        <Rect x={xOffset} y={actualY} width="16" height={actualHeight} fill={d.actual >= d.target ? "#00D1C1" : "#005E7D"} rx="4" />
-                      </React.Fragment>
-                    );
-                  })}
-                </Svg>
-              </View>
-              <View style={styles.chartLabels}>
-                {chartData.labels.map(m => (
-                  <Text key={m} style={styles.chartLabelText}>{m}</Text>
-                ))}
-              </View>
-
-              <View style={styles.legendRow}>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#E2E8F0' }]} />
-                  <Text style={styles.legendText}>Target</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#005E7D' }]} />
-                  <Text style={styles.legendText}>Actual</Text>
-                </View>
-              </View>
-            </View>
+        {/* Executive Summary */}
+        <Text style={styles.sectionTitle}>Executive Summary</Text>
+        <View style={styles.summaryGrid}>
+          <View style={[styles.kpiCard, { backgroundColor: '#005E7D' }]}>
+            <Text style={[styles.kpiLabel, { color: '#C1E8FF' }]}>Total Collected</Text>
+            <Text style={[styles.kpiValue, { color: '#FFFFFF' }]}>{formatPaise(summary.totalCollections)}</Text>
           </View>
-        )}
-
-        {activeTab === 'Defaulters' && (
-          <View>
-            <View style={styles.defaultersHeaderRow}>
-              <Text style={styles.sectionTitle}>High Risk Accounts</Text>
-              <View style={styles.badgeDanger}>
-                <Text style={styles.badgeDangerText}>{defaulters.length} Total</Text>
-              </View>
-            </View>
-
-            {defaulters.length === 0 ? (
-              <Text style={{ fontFamily: 'Inter_400Regular', color: '#64748B', textAlign: 'center', marginTop: 32 }}>No overdue accounts found.</Text>
-            ) : (
-              defaulters.map((d, i) => (
-                <View key={i} style={styles.defaulterCard}>
-                  <View style={styles.defaulterTop}>
-                    <View>
-                      <Text style={styles.defaulterName}>Member ID: {d.id.substring(0, 8)}</Text>
-                      <Text style={styles.defaulterSub}>Group {d.groupName} • {d.monthsOverdue} Months Overdue</Text>
-                    </View>
-                    <View style={[styles.riskBadge, { backgroundColor: d.monthsOverdue > 2 ? '#FEE2E2' : '#FEF3C7', borderColor: d.monthsOverdue > 2 ? '#FECACA' : '#FDE68A' }]}>
-                      <Text style={[styles.riskBadgeText, { color: d.monthsOverdue > 2 ? '#991B1B' : '#B45309' }]}>
-                        {d.monthsOverdue > 2 ? 'CRITICAL' : 'WARNING'}
-                      </Text>
-                    </View>
-                  </View>
-                  <View style={styles.defaulterMid}>
-                    <View>
-                      <Text style={styles.defLabel}>OVERDUE AMOUNT</Text>
-                      <Text style={styles.defVal}>{formatCurrency(d.overdueAmount)}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.defaulterBottom}>
-                    <TouchableOpacity style={[styles.defActionBtn, d.monthsOverdue <= 2 && { backgroundColor: '#F1F5F9' }]}>
-                      <Text style={[styles.defActionText, d.monthsOverdue <= 2 && { color: '#475569' }]}>
-                        {d.monthsOverdue > 2 ? 'Send Legal Notice' : 'Send Reminder SMS'}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ))
-            )}
+          <View style={[styles.kpiCard, { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0' }]}>
+            <Text style={styles.kpiLabel}>Dividends Distributed</Text>
+            <Text style={[styles.kpiValue, { color: '#DC2626' }]}>{formatPaise(summary.totalDividends)}</Text>
           </View>
-        )}
+          <View style={[styles.kpiCard, { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0' }]}>
+            <Text style={styles.kpiLabel}>Active Groups</Text>
+            <Text style={[styles.kpiValue, { color: '#01789E' }]}>{summary.activeGroups}</Text>
+          </View>
+        </View>
 
-        {activeTab === 'Audit Logs' && (
-          <View>
-            <Text style={styles.sectionTitle}>System Activity Logs</Text>
+        {/* Global Trend Chart */}
+        <Text style={styles.sectionTitle}>Collection Velocity (6 Mo)</Text>
+        <View style={styles.chartCard}>
+          <View style={styles.chartWrapper}>
+            <Svg width={SCREEN_WIDTH - 80} height="160">
+              <Defs>
+                <LinearGradient id="gradient-chart" x1="0" y1="0" x2="0" y2="1">
+                  <Stop offset="0" stopColor="#005E7D" stopOpacity="0.2" />
+                  <Stop offset="1" stopColor="#005E7D" stopOpacity="0" />
+                </LinearGradient>
+              </Defs>
+              {/* Grid Lines */}
+              <Line x1="0" y1="40" x2="400" y2="40" stroke="#F1F5F9" strokeWidth="1" />
+              <Line x1="0" y1="80" x2="400" y2="80" stroke="#F1F5F9" strokeWidth="1" />
+              <Line x1="0" y1="120" x2="400" y2="120" stroke="#F1F5F9" strokeWidth="1" />
+              
+              <Path d={chartData.pathArea} fill="url(#gradient-chart)" />
+              <Path d={chartData.pathLine} fill="none" stroke="#005E7D" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+              
+              {chartData.points.map((p, i) => (
+                <Circle key={i} cx={p.x} cy={p.y} r="4" fill={i === chartData.points.length - 1 ? "#10D7CD" : "#FFFFFF"} stroke="#005E7D" strokeWidth={i === chartData.points.length - 1 ? 0 : 2} />
+              ))}
+            </Svg>
 
-            {logs.length === 0 ? (
-              <Text style={{ fontFamily: 'Inter_400Regular', color: '#64748B', textAlign: 'center', marginTop: 32 }}>No recent system logs.</Text>
-            ) : (
-              <View style={styles.timeline}>
-                {logs.map((log, i) => (
-                  <View key={log.id || i} style={styles.timelineItem}>
-                    <View style={styles.timelineDotBox}>
-                      <View style={[styles.timelineDot, { backgroundColor: log.type === 'credit' ? '#00D1C1' : '#F59E0B' }]} />
-                      <View style={[styles.timelineLine, i === logs.length - 1 && { opacity: 0 }]} />
-                    </View>
-                    <View style={styles.timelineContent}>
-                      <Text style={styles.tlTime}>{new Date(log.created_at).toLocaleString()}</Text>
-                      <Text style={styles.tlTitle}>{log.category}</Text>
-                      <Text style={styles.tlDesc}>{log.description}</Text>
-                    </View>
-                  </View>
-                ))}
+            {chartData.lastPoint && chartData.lastPoint.amount > 0 && (
+              <View style={[styles.floatingIndicator, { right: 0, top: Math.max(0, chartData.lastPoint.y - 30) }]}>
+                <Text style={styles.floatingIndicatorText}>{formatPaise(chartData.lastPoint.amount)}</Text>
               </View>
             )}
           </View>
+
+          <View style={styles.chartLabels}>
+            {chartData.labels.map(month => (
+              <Text key={month} style={styles.chartLabelText}>{month}</Text>
+            ))}
+          </View>
+        </View>
+
+        {/* Group By Group Breakdown */}
+        <Text style={[styles.sectionTitle, { marginTop: 10 }]}>Group Analytics</Text>
+        
+        {groupsData.length === 0 && !loading && (
+          <Text style={styles.emptyText}>No groups found to analyze.</Text>
         )}
+
+        {groupsData.map(group => {
+          const isExpanded = expandedGroup === group.id;
+          
+          return (
+            <View key={group.id} style={styles.groupCard}>
+              <TouchableOpacity style={styles.groupHeader} activeOpacity={0.8} onPress={() => toggleGroup(group.id)}>
+                <View style={styles.groupHeaderTop}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.groupName}>{group.name}</Text>
+                    <Text style={styles.groupValueText}>Value: {formatPaise(group.value)}</Text>
+                  </View>
+                  <View style={[styles.statusBadge, { backgroundColor: group.status === 'active' ? '#ECFDF5' : '#F1F5F9' }]}>
+                    <Text style={[styles.statusText, { color: group.status === 'active' ? '#059669' : '#64748B' }]}>
+                      {group.status.toUpperCase()}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* KPI Row */}
+                <View style={styles.groupKpiRow}>
+                  <View>
+                    <Text style={styles.kpiLabelSmall}>Collected</Text>
+                    <Text style={styles.kpiValueSmall}>{formatPaise(group.totalCollected)}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.kpiLabelSmall}>Dividends</Text>
+                    <Text style={[styles.kpiValueSmall, { color: '#DC2626' }]}>{formatPaise(group.totalDividends)}</Text>
+                  </View>
+                </View>
+
+                {/* Fake Progress bar for visual weight */}
+                <View style={styles.progressTrack}>
+                  <View style={[styles.progressFill, { width: `${group.progress}%` }]} />
+                </View>
+
+                <View style={styles.expandRow}>
+                  <Text style={styles.expandText}>{isExpanded ? 'Hide Customer Breakdown' : 'View Customer Breakdown'}</Text>
+                  <Svg width={16} height={16} viewBox="0 0 24 24" fill="#94A3B8" style={{ transform: [{ rotate: isExpanded ? '180deg' : '0deg' }] }}>
+                    <Path d="M7 10l5 5 5-5H7z" />
+                  </Svg>
+                </View>
+              </TouchableOpacity>
+
+              {/* Expanded Customer Details */}
+              {isExpanded && (
+                <View style={styles.customerList}>
+                  
+                  {/* Search Bar */}
+                  <View style={styles.searchContainer}>
+                    <Svg width={16} height={16} viewBox="0 0 24 24" fill="#94A3B8" style={{ marginRight: 8 }}>
+                      <Path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                    </Svg>
+                    <TextInput
+                      style={styles.searchInput}
+                      placeholder="Search member..."
+                      placeholderTextColor="#94A3B8"
+                      value={searchQuery}
+                      onChangeText={setSearchQuery}
+                    />
+                  </View>
+
+                  <View style={styles.customerListHeaderRow}>
+                    <Text style={styles.customerListHeader}>Member Name</Text>
+                    <View style={styles.customerListHeaderRight}>
+                      <Text style={[styles.customerListHeader, { marginRight: 20 }]}>Paid</Text>
+                      <Text style={styles.customerListHeader}>Dividend</Text>
+                    </View>
+                  </View>
+                  
+                  {group.customers.length === 0 ? (
+                    <Text style={styles.emptyTextSm}>No transactions recorded for members yet.</Text>
+                  ) : (
+                    group.customers
+                      .filter(cust => cust.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                      .sort((a, b) => b.totalPaid - a.totalPaid)
+                      .map(cust => (
+                        <TouchableOpacity 
+                          key={cust.customerId} 
+                          style={styles.customerRow}
+                          activeOpacity={0.7}
+                          onPress={() => router.push(`/(admin)/customers/${cust.customerId}`)}
+                        >
+                          <Text style={styles.customerName} numberOfLines={1}>{cust.name}</Text>
+                          <View style={styles.customerValues}>
+                            <Text style={styles.customerPaid}>{formatPaise(cust.totalPaid)}</Text>
+                            <Text style={styles.customerDiv}>{formatPaise(cust.totalDividendsReceived)}</Text>
+                            <Svg width={16} height={16} viewBox="0 0 24 24" fill="#CBD5E1">
+                              <Path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" opacity={0} />
+                              <Path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
+                            </Svg>
+                          </View>
+                        </TouchableOpacity>
+                      ))
+                  )}
+                  {group.customers.filter(cust => cust.name.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 && group.customers.length > 0 && (
+                    <Text style={styles.emptyTextSm}>No members match your search.</Text>
+                  )}
+                </View>
+              )}
+            </View>
+          );
+        })}
 
       </ScrollView>
     </SafeAreaView>
@@ -348,77 +458,282 @@ export default function AdminReports() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8F9FF' },
+  container: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+  },
   appBar: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 20, height: 64, backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1, borderBottomColor: '#F1F5F9', zIndex: 40,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    height: 64,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
   },
-  appBarLeft: { flexDirection: 'row', alignItems: 'center' },
-  appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#0F172A' },
-  appBarRight: {},
+  appBarLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  appBarTitle: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 20,
+    color: '#0B1C30',
+  },
   exportBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: '#EFF6FF', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0F9FF',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    gap: 4,
   },
-  exportBtnText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#005E7D' },
+  exportBtnText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: '#005E7D',
+  },
+  scrollContent: {
+    padding: 20,
+    paddingBottom: 40,
+  },
+  sectionTitle: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 18,
+    color: '#0B1C30',
+    marginBottom: 16,
+    marginTop: 8,
+  },
+  summaryGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginBottom: 24,
+  },
+  kpiCard: {
+    flex: 1,
+    minWidth: '45%',
+    padding: 16,
+    borderRadius: 16,
+    justifyContent: 'center',
+  },
+  kpiLabel: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    color: '#64748B',
+    marginBottom: 8,
+  },
+  kpiValue: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 22,
+    color: '#0B1C30',
+  },
+  
+  // Chart Styles
+  chartCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 32,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  chartWrapper: {
+    height: 160,
+    position: 'relative',
+    marginBottom: 16,
+  },
+  floatingIndicator: {
+    position: 'absolute',
+    backgroundColor: '#0B1C30',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    transform: [{ translateY: -10 }],
+  },
+  floatingIndicatorText: {
+    color: '#FFF',
+    fontFamily: 'Inter_700Bold',
+    fontSize: 11,
+  },
+  chartLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 4,
+  },
+  chartLabelText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 10,
+    color: '#94A3B8',
+  },
 
-  tabContainer: { backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
-  tabScroll: { paddingHorizontal: 20 },
-  tab: { paddingVertical: 16, marginRight: 32, borderBottomWidth: 2, borderBottomColor: 'transparent' },
-  tabActive: { borderBottomColor: '#005E7D' },
-  tabText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#64748B' },
-  tabTextActive: { color: '#005E7D' },
+  // Group Cards
+  emptyText: {
+    fontFamily: 'Inter_400Regular',
+    color: '#64748B',
+    fontStyle: 'italic',
+  },
+  emptyTextSm: {
+    fontFamily: 'Inter_400Regular',
+    fontSize: 12,
+    color: '#94A3B8',
+    fontStyle: 'italic',
+    paddingVertical: 8,
+  },
+  groupCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+    overflow: 'hidden',
+  },
+  groupHeader: {
+    padding: 16,
+  },
+  groupHeaderTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 16,
+  },
+  groupName: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 16,
+    color: '#0B1C30',
+  },
+  groupValueText: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  statusText: {
+    fontFamily: 'Inter_700Bold',
+    fontSize: 10,
+  },
+  groupKpiRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  kpiLabelSmall: {
+    fontFamily: 'Inter_500Medium',
+    fontSize: 11,
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+  },
+  kpiValueSmall: {
+    fontFamily: 'SpaceGrotesk_700Bold',
+    fontSize: 16,
+    color: '#0F172A',
+    marginTop: 2,
+  },
+  progressTrack: {
+    height: 6,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginBottom: 16,
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#01789E',
+    borderRadius: 3,
+  },
+  expandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F8FAFC',
+    gap: 4,
+  },
+  expandText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 12,
+    color: '#64748B',
+  },
 
-  scrollContent: { padding: 20, paddingBottom: 120 },
-
-  summaryCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 24, marginBottom: 24, borderWidth: 1, borderColor: '#F1F5F9', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
-  summaryTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 18, color: '#0B1C30', marginBottom: 20 },
-  summaryRow: { flexDirection: 'row', marginBottom: 20 },
-  summaryCol: { flex: 1 },
-  summaryLabel: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B', marginBottom: 4 },
-  summaryVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24 },
-  netProfitBox: { backgroundColor: '#F0FDF4', padding: 16, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  netProfitLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#166534' },
-  netProfitVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#16A34A' },
-
-  chartCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 24, borderWidth: 1, borderColor: '#F1F5F9', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
-  chartHeader: { marginBottom: 24 },
-  chartTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 18, color: '#0B1C30' },
-  chartSubtitle: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748B' },
-  chartContainer: { height: 160, marginBottom: 12 },
-  chartLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
-  chartLabelText: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#94A3B8' },
-  legendRow: { flexDirection: 'row', justifyContent: 'center', gap: 24 },
-  legendItem: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  legendDot: { width: 12, height: 12, borderRadius: 4 },
-  legendText: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B' },
-
-  defaultersHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  sectionTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 18, color: '#164E63' },
-  badgeDanger: { backgroundColor: '#FEF2F2', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 100 },
-  badgeDangerText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#EF4444' },
-
-  defaulterCard: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: '#F1F5F9', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
-  defaulterTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
-  defaulterName: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 18, color: '#0B1C30' },
-  defaulterSub: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B', marginTop: 2 },
-  riskBadge: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 100, borderWidth: 1 },
-  riskBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 0.5 },
-  defaulterMid: { marginBottom: 20 },
-  defLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#64748B', letterSpacing: 0.5, marginBottom: 4 },
-  defVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#EF4444' },
-  defaulterBottom: { borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingTop: 16 },
-  defActionBtn: { backgroundColor: '#EF4444', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
-  defActionText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#FFFFFF' },
-
-  timeline: { paddingLeft: 8, marginTop: 16 },
-  timelineItem: { flexDirection: 'row', minHeight: 80 },
-  timelineDotBox: { width: 30, alignItems: 'center' },
-  timelineDot: { width: 12, height: 12, borderRadius: 6, marginTop: 4, zIndex: 1 },
-  timelineLine: { width: 2, flex: 1, backgroundColor: '#E2E8F0', marginTop: -8, marginBottom: 4 },
-  timelineContent: { flex: 1, paddingBottom: 32, paddingLeft: 8 },
-  tlTime: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#94A3B8', marginBottom: 4 },
-  tlTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 16, color: '#0B1C30', marginBottom: 6 },
-  tlDesc: { fontFamily: 'Inter_400Regular', fontSize: 14, color: '#475569', lineHeight: 20 },
+  // Customer List
+  customerList: {
+    backgroundColor: '#F8FAFC',
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  customerListHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  customerListHeaderRight: {
+    flexDirection: 'row',
+    width: 140,
+    justifyContent: 'space-between',
+  },
+  customerListHeader: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 10,
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+  },
+  customerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  customerName: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+    color: '#0F172A',
+    flex: 1,
+    paddingRight: 10,
+  },
+  customerValues: {
+    flexDirection: 'row',
+    width: 140,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  customerPaid: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+    color: '#059669',
+    width: 60,
+  },
+  customerDiv: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 13,
+    color: '#DC2626',
+    width: 60,
+    textAlign: 'right',
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    height: 36,
+    marginBottom: 12,
+  },
+  searchInput: {
+    flex: 1,
+    fontFamily: 'Inter_400Regular',
+    fontSize: 13,
+    color: '#0F172A',
+  },
 });
