@@ -1,0 +1,30 @@
+{
+  "profile": {
+    "greeting": "नमस्ते, {{name}}",
+    "welcome_back": "आपके वित्तीय डैशबोर्ड में आपका स्वागत है।",
+    "wallet_balance": "वॉलेट बैलेंस",
+    "my_chits": "मेरी चिट्स",
+    "auctions": "नीलामी",
+    "active_chits": "सक्रिय चिट्स",
+    "credit_score": "क्रेडिट स्कोर",
+    "preferred_language": "पसंदीदा भाषा",
+    "account_settings": "खाता सेटिंग्स",
+    "nominee_management": "नामित प्रबंधन",
+    "nominee_management_sub": "कानूनी उत्तराधिकारियों और लाभार्थियों का प्रबंधन करें",
+    "exit_foreclosure": "निकास और फौजदारी",
+    "exit_foreclosure_sub": "जल्दी निकास या योजना बंद करने का अनुरोध करें",
+    "high_impact": "उच्च प्रभाव",
+    "exit_eligibility_status": "निकास पात्रता स्थिति",
+    "exit_eligibility_sub": "आपने 12/20 महीने पूरे कर लिए हैं। इस स्तर पर फौजदारी में कुल मूलधन पर 2% प्रसंस्करण शुल्क लग सकता है।",
+    "phase_1": "चरण 1: लॉक-इन",
+    "phase_2": "चरण 2: पात्र",
+    "log_out": "लॉग आउट"
+  },
+  "nav": {
+    "home": "होम",
+    "chits": "चिट्स",
+    "auctions": "नीलामी",
+    "wallet": "इतिहास",
+    "profile": "प्रोफ़ाइल"
+  }
+}

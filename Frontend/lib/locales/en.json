@@ -1,0 +1,30 @@
+{
+  "profile": {
+    "greeting": "Hi, {{name}}",
+    "welcome_back": "Welcome back to your financial trust dashboard.",
+    "wallet_balance": "WALLET BALANCE",
+    "my_chits": "MY CHITS",
+    "auctions": "AUCTIONS",
+    "active_chits": "Active Chits",
+    "credit_score": "CREDIT SCORE",
+    "preferred_language": "PREFERRED LANGUAGE",
+    "account_settings": "ACCOUNT SETTINGS",
+    "nominee_management": "Nominee Management",
+    "nominee_management_sub": "Manage legal heirs and beneficiaries",
+    "exit_foreclosure": "Exit & Foreclosure",
+    "exit_foreclosure_sub": "Request early exit or plan closure",
+    "high_impact": "HIGH IMPACT",
+    "exit_eligibility_status": "Exit Eligibility Status",
+    "exit_eligibility_sub": "You have completed 12/20 months. A foreclosure at this stage may incur a 2% processing fee on the total principal.",
+    "phase_1": "Phase 1: Lock-in",
+    "phase_2": "Phase 2: Eligible",
+    "log_out": "Log Out"
+  },
+  "nav": {
+    "home": "Home",
+    "chits": "Chits",
+    "auctions": "Auctions",
+    "wallet": "History",
+    "profile": "Profile"
+  }
+}

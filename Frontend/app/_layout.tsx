@@ -1,0 +1,83 @@
+import '../global.css';
+import { useEffect, useState } from 'react';
+import { Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { useFonts } from 'expo-font';
+import { MemberSessionProvider } from '../lib/MemberSessionContext';
+import {
+  SpaceGrotesk_300Light,
+  SpaceGrotesk_400Regular,
+  SpaceGrotesk_500Medium,
+  SpaceGrotesk_600SemiBold,
+  SpaceGrotesk_700Bold,
+} from '@expo-google-fonts/space-grotesk';
+import {
+  Inter_300Light,
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+} from '@expo-google-fonts/inter';
+import {
+  HindMadurai_400Regular,
+  HindMadurai_500Medium,
+  HindMadurai_600SemiBold,
+  HindMadurai_700Bold,
+} from '@expo-google-fonts/hind-madurai';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { View, ActivityIndicator } from 'react-native';
+import { Colors } from '../lib/constants';
+import '../lib/i18n';
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 1000 * 60 * 5, // 5 minutes
+      retry: 2,
+    },
+  },
+});
+
+export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    SpaceGrotesk_300Light,
+    SpaceGrotesk_400Regular,
+    SpaceGrotesk_500Medium,
+    SpaceGrotesk_600SemiBold,
+    SpaceGrotesk_700Bold,
+    Inter_300Light,
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+    HindMadurai_400Regular,
+    HindMadurai_500Medium,
+    HindMadurai_600SemiBold,
+    HindMadurai_700Bold,
+  });
+
+  if (!fontsLoaded) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.primary }}>
+        <ActivityIndicator size="large" color={Colors.secondary} />
+      </View>
+    );
+  }
+
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <QueryClientProvider client={queryClient}>
+        <MemberSessionProvider>
+          <StatusBar style="light" />
+          <Stack screenOptions={{ headerShown: false }}>
+            <Stack.Screen name="index" options={{ headerShown: false }} />
+            <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="(admin)" options={{ headerShown: false }} />
+          </Stack>
+        </MemberSessionProvider>
+      </QueryClientProvider>
+    </GestureHandlerRootView>
+  );
+}

@@ -1,0 +1,660 @@
+import React, { useState, useEffect } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, TextInput, Platform, KeyboardAvoidingView, ActivityIndicator, RefreshControl, Alert } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
+import Svg, { Path } from 'react-native-svg';
+import * as Haptics from 'expo-haptics';
+import { useRouter } from 'expo-router';
+import { supabase } from '../../../lib/supabase';
+import DateTimePicker from '@react-native-community/datetimepicker';
+
+export default function AdminGroups() {
+  const router = useRouter();
+  const [isModalVisible, setModalVisible] = useState(false);
+
+  // Group Form State
+  // Group Form State - Basics
+  const [groupCode, setGroupCode] = useState('');
+  const [groupName, setGroupName] = useState('');
+  const [agentInCharge, setAgentInCharge] = useState('');
+  const [foremanName, setForemanName] = useState('');
+  const [description, setDescription] = useState('');
+
+  // Regulatory & Dates
+  const [agrNumber, setAgrNumber] = useState('');
+  const [agrDate, setAgrDate] = useState('');
+  const [psoNumber, setPsoNumber] = useState('');
+  const [psoDate, setPsoDate] = useState('');
+  const [fdNumber, setFdNumber] = useState('');
+  const [fdDate, setFdDate] = useState('');
+  const [cdraNumber, setCdraNumber] = useState('');
+  const [fdClosingDate, setFdClosingDate] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [bankName, setBankName] = useState('');
+
+  // Financials & Installments
+  const [chitAmount, setChitAmount] = useState('');
+  const [depositedAmount, setDepositedAmount] = useState('');
+  const [installments, setInstallments] = useState('');
+  const [emiAmount, setEmiAmount] = useState('');
+  const [interestRate, setInterestRate] = useState('');
+  const [frequency, setFrequency] = useState('Monthly');
+  const [agentCommission, setAgentCommission] = useState('');
+  const [foremanCommission, setForemanCommission] = useState('');
+
+  // Auction & Terms
+  const [biddingDay, setBiddingDay] = useState('');
+  const [biddingTime, setBiddingTime] = useState('');
+  const [capacity, setCapacity] = useState(50);
+  const [terms, setTerms] = useState('');
+
+  // Live Data State
+  const [groups, setGroups] = useState<any[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Date Picker State
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [currentDateField, setCurrentDateField] = useState('');
+  const [currentDateValue, setCurrentDateValue] = useState(new Date());
+
+  const openPicker = (field: string, currentVal: string) => {
+    setCurrentDateField(field);
+    const parsed = parseDateStr(currentVal);
+    if (parsed) {
+      setCurrentDateValue(new Date(parsed));
+    } else {
+      setCurrentDateValue(new Date());
+    }
+    setShowDatePicker(true);
+  };
+
+  const handleDateChange = (event: any, selectedDate?: Date) => {
+    if (Platform.OS === 'android') setShowDatePicker(false);
+    if (!selectedDate) return;
+
+    setCurrentDateValue(selectedDate);
+    const day = String(selectedDate.getDate()).padStart(2, '0');
+    const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+    const year = selectedDate.getFullYear();
+    const formatted = `${day}/${month}/${year}`;
+
+    switch (currentDateField) {
+      case 'agrDate': setAgrDate(formatted); break;
+      case 'psoDate': setPsoDate(formatted); break;
+      case 'fdDate': setFdDate(formatted); break;
+      case 'fdClosingDate': setFdClosingDate(formatted); break;
+      case 'startDate': setStartDate(formatted); break;
+      case 'endDate': setEndDate(formatted); break;
+    }
+  };
+
+  const fetchGroups = async () => {
+    try {
+      const { data, error } = await supabase.from('chit_groups').select('*').order('created_at', { ascending: false });
+      if (error) throw error;
+      if (data) setGroups(data);
+    } catch (err) {
+      console.error('Error fetching groups:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchGroups();
+  }, []);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('admin-groups-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_groups' }, fetchGroups)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chit_members' }, fetchGroups)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchGroups();
+    setRefreshing(false);
+  };
+
+  const parseDateStr = (dateStr: string) => {
+    if (!dateStr) return null;
+    const parts = dateStr.split('/');
+    if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    return null;
+  };
+
+  const handleSaveGroup = async () => {
+    if (!groupName || !chitAmount || !installments) {
+      Alert.alert('Validation Error', 'Please fill Group Name, Chit Amount, and Installments');
+      return;
+    }
+    if (!agrNumber || agrNumber.length < 3) {
+      Alert.alert('Validation Error', 'Please enter a valid Agreement Number');
+      return;
+    }
+    if (!psoNumber || psoNumber.length < 3) {
+      Alert.alert('Validation Error', 'Please enter a valid PSO Number');
+      return;
+    }
+    if (!fdNumber || fdNumber.length < 3) {
+      Alert.alert('Validation Error', 'Please enter a valid FD Number');
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const payload = {
+        name: groupName,
+        value: Number(chitAmount) * 100, // store in paise
+        duration_months: Number(installments),
+        monthly_installment: Number(emiAmount) * 100 || 0,
+        group_code: groupCode,
+        agent_in_charge: agentInCharge,
+        foreman_name: foremanName,
+        description,
+        agr_number: agrNumber,
+        agr_date: parseDateStr(agrDate),
+        pso_number: psoNumber,
+        pso_date: parseDateStr(psoDate),
+        fd_number: fdNumber,
+        fd_date: parseDateStr(fdDate),
+        cdra_number: cdraNumber,
+        fd_closing_date: parseDateStr(fdClosingDate),
+        start_date: parseDateStr(startDate),
+        end_date: parseDateStr(endDate),
+        bank_name: bankName,
+        deposited_amount: Number(depositedAmount) * 100 || 0,
+        interest_rate: Number(interestRate) || 0,
+        no_of_installments: Number(installments),
+        emi_amount: Number(emiAmount) * 100 || 0,
+        agent_commission_rate: Number(agentCommission) || 0,
+        foreman_commission_amount: Number(foremanCommission) * 100 || 0,
+        frequency,
+        bidding_day: biddingDay,
+        bidding_time: biddingTime,
+        capacity,
+        terms_conditions: terms,
+        status: 'active'
+      };
+
+      const { error } = await supabase.from('chit_groups').insert([payload]);
+
+      if (error) {
+        console.error('Insert Error:', error);
+        alert('Failed to save group: ' + error.message);
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+        // Reset major fields
+        setGroupCode(''); setGroupName(''); setChitAmount(''); setInstallments(''); setEmiAmount('');
+
+        closeModal();
+        fetchGroups();
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert('An error occurred while saving.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openModal = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    setModalVisible(true);
+  };
+
+  const closeModal = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setModalVisible(false);
+  };
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Top App Bar */}
+      <View style={styles.appBar}>
+        <View style={styles.appBarLeft}>
+          <View style={styles.avatarContainer}>
+            <Image
+              source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBqFl0ECv0RRbv5ZhFRwj3-dkskzzXKWk6vFF-Mj9lRN92bA3T2cgF9rs6nPm9LzRzbFMo8JntoQPSkd-6R-CQMyckTlj1qvdFKcRT_uVtlnUlRs2KF76w8RNJAVFK-9MwHg5Z5MTOEXjevBWbHvYk-KA7YlJTtkgKL96Tju6PXqWbN4OrAIUUX8AX5OFbtG-pDgjmLcrDCDDrQkFWrkbNqvdE2x82COQ9Y-nzG0rie8SlovZZPmWuwpplLMJyaNQfZUBtwKi7xHio' }}
+              style={styles.avatar}
+            />
+          </View>
+          <Text style={styles.appBarTitle}>VSYK Chits</Text>
+        </View>
+        <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>
+          <Svg width={24} height={24} viewBox="0 0 24 24" fill="#00789E">
+            <Path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2zm-2 1H8v-6c0-2.48 1.51-4.5 4-4.5s4 2.02 4 4.5v6z" />
+          </Svg>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#005E7D" />}
+      >
+
+        <View style={styles.headerArea}>
+          <Text style={styles.pageTitle}>Active Chit Groups</Text>
+          <Text style={styles.pageSubtitle}>Manage and monitor your ongoing auction cycles.</Text>
+        </View>
+
+        <View style={styles.grid}>
+          {/* Add New Group Action Card */}
+          <TouchableOpacity style={styles.addCard} onPress={openModal} activeOpacity={0.7}>
+            <View style={styles.addIconBox}>
+              <Svg width={32} height={32} viewBox="0 0 24 24" fill="#005E7D">
+                <Path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
+              </Svg>
+            </View>
+            <Text style={styles.addTitle}>Initialize New Group</Text>
+            <Text style={styles.addSubtitle}>Configure Duration & Slots</Text>
+          </TouchableOpacity>
+
+          {/* Dynamic Active Groups */}
+          {groups.length === 0 ? (
+            <View style={{ alignItems: 'center', marginTop: 40 }}>
+              <Text style={{ fontFamily: 'Inter_400Regular', color: '#64748B' }}>No active groups initialized yet.</Text>
+            </View>
+          ) : (
+            groups.map((group) => (
+              <TouchableOpacity
+                key={group.id}
+                style={styles.groupCard}
+                activeOpacity={0.9}
+                onPress={() => router.push(`/(admin)/groups/${group.group_code || group.id}`)}
+              >
+                <View style={styles.cardTop}>
+                  <View>
+                    <View style={[styles.badge, { backgroundColor: group.status === 'active' ? 'rgba(84, 250, 239, 0.3)' : 'rgba(241, 245, 249, 1)' }]}>
+                      <Text style={[styles.badgeText, { color: group.status === 'active' ? '#00716b' : '#64748B' }]}>{group.status?.toUpperCase() || 'ACTIVE'}</Text>
+                    </View>
+                    <Text style={styles.groupName}>{group.name}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={styles.labelSmall}>Group ID</Text>
+                    <Text style={styles.idText}>#{group.group_code || 'PENDING'}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.valueRow}>
+                  <Text style={styles.valueText}>₹{(Number(group.value) / 100).toLocaleString('en-IN')}</Text>
+                  <Text style={styles.labelSmall}>Total Value</Text>
+                </View>
+
+                <View style={styles.progressSection}>
+                  <View style={styles.progressHeader}>
+                    <Text style={styles.labelSmall}>Duration</Text>
+                    <Text style={styles.labelSmall}>{group.duration_months} Months</Text>
+                  </View>
+                  <View style={styles.progressBarBg}>
+                    <View style={[styles.progressBarFill, { width: '0%', backgroundColor: '#01789E' }]} />
+                  </View>
+                </View>
+
+                <View style={styles.cardFooter}>
+                  <View>
+                    <Text style={styles.footerLabel}>START DATE</Text>
+                    <Text style={styles.footerVal}>{group.start_date || 'TBD'}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={styles.footerLabel}>SUBSCRIBERS</Text>
+                    <Text style={styles.footerVal}>0 / {group.capacity || 50}</Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+
+      </ScrollView>
+
+      {/* Full Screen Modal */}
+      <Modal visible={isModalVisible} animationType="slide" presentationStyle="pageSheet">
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalContainer}>
+
+          <View style={styles.modalHeader}>
+            <View>
+              <Text style={styles.modalTitle}>Initialize New Group</Text>
+              <Text style={styles.modalSubtitle}>Configure the parameters for the new chit cycle</Text>
+            </View>
+            <TouchableOpacity style={styles.closeBtn} onPress={closeModal}>
+              <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
+                <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+              </Svg>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+
+            {/* Section 1: BASICS */}
+            <View style={styles.formSection}>
+              <View style={styles.sectionHeader}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="#005E7D"><Path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z" /></Svg>
+                <Text style={styles.sectionTitle}>01. BASICS</Text>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>GROUP CODE</Text>
+                  <TextInput style={styles.input} placeholder="VS-001" value={groupCode} onChangeText={setGroupCode} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 2 }]}>
+                  <Text style={styles.inputLabel}>GROUP NAME</Text>
+                  <TextInput style={styles.input} placeholder="Wealth Max 2025" value={groupName} onChangeText={setGroupName} />
+                </View>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>AGENT IN CHARGE</Text>
+                  <TextInput style={styles.input} placeholder="Agent Name" value={agentInCharge} onChangeText={setAgentInCharge} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>FOREMAN NAME</Text>
+                  <TextInput style={styles.input} placeholder="Foreman Name" value={foremanName} onChangeText={setForemanName} />
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>DESCRIPTION</Text>
+                <TextInput style={[styles.input, { minHeight: 60 }]} placeholder="Short description..." multiline value={description} onChangeText={setDescription} />
+              </View>
+            </View>
+
+            {/* Section 2: REGULATORY & DATES */}
+            <View style={styles.formSection}>
+              <View style={styles.sectionHeader}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="#005E7D"><Path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" /></Svg>
+                <Text style={styles.sectionTitle}>02. REGULATORY & DATES</Text>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>AGR NUMBER *</Text>
+                  <TextInput style={styles.input} value={agrNumber} onChangeText={setAgrNumber} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>AGR DATE</Text>
+                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('agrDate', agrDate)}>
+                    <Text style={{ color: agrDate ? '#0F172A' : '#94A3B8' }}>{agrDate || 'Select Date'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>PSO NUMBER *</Text>
+                  <TextInput style={styles.input} value={psoNumber} onChangeText={setPsoNumber} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>PSO DATE</Text>
+                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('psoDate', psoDate)}>
+                    <Text style={{ color: psoDate ? '#0F172A' : '#94A3B8' }}>{psoDate || 'Select Date'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>FD NUMBER *</Text>
+                  <TextInput style={styles.input} value={fdNumber} onChangeText={setFdNumber} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>FD DATE</Text>
+                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('fdDate', fdDate)}>
+                    <Text style={{ color: fdDate ? '#0F172A' : '#94A3B8' }}>{fdDate || 'Select Date'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>CDRA NUMBER</Text>
+                  <TextInput style={styles.input} value={cdraNumber} onChangeText={setCdraNumber} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>FD CLOSING DATE</Text>
+                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('fdClosingDate', fdClosingDate)}>
+                    <Text style={{ color: fdClosingDate ? '#0F172A' : '#94A3B8' }}>{fdClosingDate || 'Select Date'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>START DATE</Text>
+                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('startDate', startDate)}>
+                    <Text style={{ color: startDate ? '#0F172A' : '#94A3B8' }}>{startDate || 'Select Date'}</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>END DATE</Text>
+                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('endDate', endDate)}>
+                    <Text style={{ color: endDate ? '#0F172A' : '#94A3B8' }}>{endDate || 'Select Date'}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>BANK NAME</Text>
+                <TextInput style={styles.input} value={bankName} onChangeText={setBankName} />
+              </View>
+            </View>
+
+            {/* Section 3: FINANCIALS */}
+            <View style={styles.formSection}>
+              <View style={styles.sectionHeader}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="#005E7D"><Path d="M11.8 10.9c-2.27-.59-3-1.2-3-2.15 0-1.09 1.01-1.85 2.7-1.85 1.78 0 2.44.85 2.5 2.1h2.21c-.07-1.72-1.12-3.3-3.21-3.81V3h-3v2.16c-1.94.42-3.5 1.68-3.5 3.61 0 2.31 1.91 3.46 4.7 4.13 2.5.6 3 1.48 3 2.41 0 .69-.49 1.79-2.7 1.79-2.06 0-2.87-.92-2.98-2.1h-2.2c.12 2.19 1.76 3.42 3.68 3.83V21h3v-2.15c1.95-.37 3.5-1.5 3.5-3.55 0-2.84-2.43-3.81-4.7-4.4z" /></Svg>
+                <Text style={styles.sectionTitle}>03. FINANCIALS & INSTALLMENTS</Text>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>TOTAL CHIT AMOUNT</Text>
+                  <TextInput style={styles.input} placeholder="5,00,000" keyboardType="number-pad" value={chitAmount} onChangeText={setChitAmount} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>DEPOSITED AMOUNT</Text>
+                  <TextInput style={styles.input} keyboardType="number-pad" value={depositedAmount} onChangeText={setDepositedAmount} />
+                </View>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>NO. OF INSTALLMENTS</Text>
+                  <TextInput style={styles.input} keyboardType="number-pad" value={installments} onChangeText={setInstallments} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>EMI AMOUNT</Text>
+                  <TextInput style={styles.input} keyboardType="number-pad" value={emiAmount} onChangeText={setEmiAmount} />
+                </View>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>INTEREST RATE (%)</Text>
+                  <TextInput style={styles.input} keyboardType="number-pad" value={interestRate} onChangeText={setInterestRate} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>FREQUENCY</Text>
+                  <TextInput style={styles.input} placeholder="e.g. Monthly" value={frequency} onChangeText={setFrequency} />
+                </View>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>AGENT COMM. RATE (%)</Text>
+                  <TextInput style={styles.input} keyboardType="number-pad" value={agentCommission} onChangeText={setAgentCommission} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>FOREMAN COMM. (₹)</Text>
+                  <TextInput style={styles.input} keyboardType="number-pad" value={foremanCommission} onChangeText={setForemanCommission} />
+                </View>
+              </View>
+            </View>
+
+            {/* Section 4: AUCTION & TERMS */}
+            <View style={styles.formSection}>
+              <View style={styles.sectionHeader}>
+                <Svg width={20} height={20} viewBox="0 0 24 24" fill="#005E7D"><Path d="M14 11c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1v-1h11v1zm8.28-4.71l-1.41-1.41L10.34 14l-1.41 1.41 2.83 2.83L13.17 16.83l9.11-9.11z" /></Svg>
+                <Text style={styles.sectionTitle}>04. AUCTION & TERMS</Text>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>BIDDING DAY</Text>
+                  <TextInput style={styles.input} placeholder="e.g. 15th of month" value={biddingDay} onChangeText={setBiddingDay} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>BIDDING TIME</Text>
+                  <TextInput style={styles.input} placeholder="10:00 AM" value={biddingTime} onChangeText={setBiddingTime} />
+                </View>
+              </View>
+
+              <View style={styles.slotsBox}>
+                <View>
+                  <Text style={styles.slotsMain}>Subscriber Slots (Capacity)</Text>
+                  <Text style={styles.slotsSub}>Total members in group</Text>
+                </View>
+                <View style={styles.stepper}>
+                  <TouchableOpacity style={styles.stepBtn} onPress={() => setCapacity(Math.max(5, capacity - 1))}>
+                    <Text style={styles.stepBtnText}>-</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.stepVal}>{capacity}</Text>
+                  <TouchableOpacity style={styles.stepBtn} onPress={() => setCapacity(capacity + 1)}>
+                    <Text style={styles.stepBtnText}>+</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>TERMS & CONDITIONS</Text>
+                <TextInput style={[styles.input, { minHeight: 80, textAlignVertical: 'top' }]} placeholder="Specify any custom T&C..." multiline value={terms} onChangeText={setTerms} />
+              </View>
+            </View>
+
+          </ScrollView>
+
+          <View style={styles.modalFooter}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={closeModal} disabled={isSaving}>
+              <Text style={styles.cancelBtnText}>CANCEL</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.saveBtn} onPress={handleSaveGroup} disabled={isSaving}>
+              {isSaving ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Text style={styles.saveBtnText}>INITIALIZE GROUP</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+        </KeyboardAvoidingView>
+      </Modal>
+
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#F8F9FF' },
+  appBar: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 20, height: 64, backgroundColor: 'rgba(255,255,255,0.9)',
+    borderBottomWidth: 1, borderBottomColor: '#F1F5F9', zIndex: 40,
+    shadowColor: '#01789E', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 20, elevation: 5,
+  },
+  appBarLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  avatarContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#C1E8FF', overflow: 'hidden' },
+  avatar: { width: '100%', height: '100%' },
+  appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#155E75', letterSpacing: -0.5 },
+  iconButton: { padding: 8, borderRadius: 20 },
+
+  scrollContent: { padding: 20, paddingBottom: 120 },
+  headerArea: { marginBottom: 24 },
+  pageTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 32, color: '#005E7D', letterSpacing: -0.5 },
+  pageSubtitle: { fontFamily: 'Inter_400Regular', fontSize: 16, color: '#64748B', marginTop: 4 },
+
+  grid: { gap: 24 },
+
+  addCard: {
+    alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.4)',
+    borderWidth: 2, borderStyle: 'dashed', borderColor: 'rgba(0, 94, 125, 0.2)',
+    borderRadius: 20, padding: 32,
+  },
+  addIconBox: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(0, 94, 125, 0.1)', alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
+  addTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 24, color: '#005E7D' },
+  addSubtitle: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B', marginTop: 4 },
+
+  groupCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 24,
+    borderWidth: 1, borderColor: '#F1F5F9',
+    shadowColor: '#01789E', shadowOffset: { width: 0, height: 20 }, shadowOpacity: 0.06, shadowRadius: 40, elevation: 4,
+  },
+  cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
+  badge: { alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 100, marginBottom: 8 },
+  badgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 0.5 },
+  groupName: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 24, color: '#0B1C30' },
+  labelSmall: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B' },
+  idText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#005E7D', marginTop: 2 },
+
+  valueRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, marginBottom: 16 },
+  valueText: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 32, color: '#005E7D' },
+
+  progressSection: { marginBottom: 24 },
+  progressHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  progressBarBg: { width: '100%', height: 8, backgroundColor: '#E5EEFF', borderRadius: 4, overflow: 'hidden' },
+  progressBarFill: { height: '100%', borderRadius: 4 },
+
+  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', paddingTop: 16, borderTopWidth: 1, borderTopColor: '#F8FAFC' },
+  footerLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#94A3B8', letterSpacing: 0.5 },
+  footerVal: { fontFamily: 'Inter_600SemiBold', fontSize: 16, color: '#0B1C30', marginTop: 4 },
+
+  modalContainer: { flex: 1, backgroundColor: '#FFFFFF' },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  modalTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 24, color: '#0B1C30' },
+  modalSubtitle: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B', marginTop: 4 },
+  closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F8FAFC', alignItems: 'center', justifyContent: 'center' },
+
+  modalScroll: { flex: 1 },
+  modalScrollContent: { padding: 24, gap: 32 },
+
+  formSection: { gap: 16 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  sectionTitle: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#005E7D', letterSpacing: 1 },
+
+  inputGroup: { gap: 8 },
+  rowInputs: { flexDirection: 'row', gap: 16 },
+  inputLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B' },
+  input: {
+    backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12,
+    paddingHorizontal: 16, paddingVertical: 14, fontFamily: 'Inter_400Regular', fontSize: 16, color: '#0B1C30',
+  },
+
+  infoBox: { flexDirection: 'row', backgroundColor: '#EFF4FF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#D3E4FE' },
+  infoCol: { flex: 1, alignItems: 'center' },
+  infoDivider: { width: 1, backgroundColor: '#D3E4FE', marginHorizontal: 16 },
+  infoLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#64748B', marginBottom: 4 },
+  infoVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#005E7D' },
+
+  slotsBox: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 16 },
+  slotsMain: { fontFamily: 'Inter_600SemiBold', fontSize: 16, color: '#0B1C30' },
+  slotsSub: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B', marginTop: 2 },
+  stepper: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  stepBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' },
+  stepBtnText: { fontFamily: 'SpaceGrotesk_500Medium', fontSize: 18, color: '#0B1C30' },
+  stepVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24, color: '#0B1C30' },
+
+  modalFooter: { flexDirection: 'row', padding: 24, borderTopWidth: 1, borderTopColor: '#F1F5F9', gap: 16, backgroundColor: '#FFFFFF' },
+  cancelBtn: { flex: 1, paddingVertical: 16, borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0', alignItems: 'center', justifyContent: 'center' },
+  cancelBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#64748B', letterSpacing: 1 },
+  saveBtn: { flex: 2, paddingVertical: 16, borderRadius: 16, backgroundColor: '#005E7D', alignItems: 'center', justifyContent: 'center', shadowColor: '#005E7D', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.25, shadowRadius: 24, elevation: 8 },
+  saveBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 1 },
+});
