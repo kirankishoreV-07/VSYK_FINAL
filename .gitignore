@@ -1,0 +1,41 @@
+# Node
+node_modules/
+
+# Logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+pnpm-debug.*
+
+# macOS
+.DS_Store
+
+# Env
+.env
+.env.*
+
+# Builds
+/dist
+/build
+
+# Expo
+.expo/
+web-build/
+
+# Native
+/android
+/ios
+
+# TypeScript
+*.tsbuildinfo
+
+# Metro
+.metro-health-check*
+
+# Keys/certs
+*.pem
+*.p12
+*.p8
+*.key
+*.jks
+*.mobileprovision
