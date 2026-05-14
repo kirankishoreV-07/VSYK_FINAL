@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { Image } from 'expo-image';
 import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
@@ -32,7 +33,16 @@ export default function AdminSettings() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.appBar}>
-        <Text style={styles.appBarTitle}>Settings</Text>
+        <View style={styles.appBarLeft}>
+          <View style={styles.avatarContainerHeader}>
+            <Image
+              source={require('../../assets/cropped_logo.png')}
+              style={styles.avatarHeader}
+              contentFit="contain"
+            />
+          </View>
+          <Text style={styles.appBarTitle}>Settings</Text>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -106,10 +116,19 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#F1F5F9',
   },
+  appBarLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  avatarContainerHeader: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarHeader: { width: '100%', height: '100%' },
   appBarTitle: {
     fontFamily: 'SpaceGrotesk_700Bold',
     fontSize: 24,
     color: '#0B1C30',
+    letterSpacing: -0.5,
   },
   scrollContent: {
     padding: 20,

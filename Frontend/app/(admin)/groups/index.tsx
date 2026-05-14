@@ -44,7 +44,7 @@ export default function AdminGroups() {
   const [foremanCommission, setForemanCommission] = useState('');
 
   // Auction & Terms
-  const [biddingDay, setBiddingDay] = useState('');
+  const [biddingDate, setBiddingDate] = useState('');
   const [biddingTime, setBiddingTime] = useState('');
   const [capacity, setCapacity] = useState(50);
   const [terms, setTerms] = useState('');
@@ -58,41 +58,105 @@ export default function AdminGroups() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [currentDateField, setCurrentDateField] = useState('');
   const [currentDateValue, setCurrentDateValue] = useState(new Date());
+  const [pendingDateValue, setPendingDateValue] = useState(new Date());
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [currentTimeValue, setCurrentTimeValue] = useState(new Date());
+  const [pendingTimeValue, setPendingTimeValue] = useState(new Date());
+  const [showFrequencyOptions, setShowFrequencyOptions] = useState(false);
+
+  const frequencyOptions = ['Monthly', 'Weekly'];
 
   const openPicker = (field: string, currentVal: string) => {
     setCurrentDateField(field);
-    const parsed = parseDateStr(currentVal);
+    const parsed = parsePickerDate(currentVal);
     if (parsed) {
-      setCurrentDateValue(new Date(parsed));
+      const nextDate = new Date(parsed);
+      setCurrentDateValue(nextDate);
+      setPendingDateValue(nextDate);
     } else {
-      setCurrentDateValue(new Date());
+      const nextDate = new Date();
+      setCurrentDateValue(nextDate);
+      setPendingDateValue(nextDate);
     }
     setShowDatePicker(true);
   };
 
-  const handleDateChange = (event: any, selectedDate?: Date) => {
-    if (Platform.OS === 'android') setShowDatePicker(false);
-    if (!selectedDate) return;
-
+  const applyDateValue = (selectedDate: Date) => {
     setCurrentDateValue(selectedDate);
     const day = String(selectedDate.getDate()).padStart(2, '0');
     const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
     const year = selectedDate.getFullYear();
-    const formatted = `${day}/${month}/${year}`;
+    const formattedFull = `${day}/${month}/${year}`;
+    const formattedDayMonth = `${day}/${month}`;
 
     switch (currentDateField) {
-      case 'agrDate': setAgrDate(formatted); break;
-      case 'psoDate': setPsoDate(formatted); break;
-      case 'fdDate': setFdDate(formatted); break;
-      case 'fdClosingDate': setFdClosingDate(formatted); break;
-      case 'startDate': setStartDate(formatted); break;
-      case 'endDate': setEndDate(formatted); break;
+      case 'agrDate': setAgrDate(formattedFull); break;
+      case 'psoDate': setPsoDate(formattedFull); break;
+      case 'fdDate': setFdDate(formattedFull); break;
+      case 'fdClosingDate': setFdClosingDate(formattedFull); break;
+      case 'startDate': setStartDate(formattedFull); break;
+      case 'endDate': setEndDate(formattedFull); break;
+      case 'biddingDate': setBiddingDate(formattedDayMonth); break;
+    }
+  };
+
+  const handleDateChange = (event: any, selectedDate?: Date) => {
+    if (!selectedDate) {
+      if (Platform.OS === 'android') setShowDatePicker(false);
+      return;
+    }
+
+    setPendingDateValue(selectedDate);
+    if (Platform.OS === 'android') {
+      applyDateValue(selectedDate);
+      setShowDatePicker(false);
+    }
+  };
+
+  const openTimePicker = (currentVal: string) => {
+    if (currentVal) {
+      const now = new Date();
+      const parsed = new Date(`${now.toDateString()} ${currentVal}`);
+      if (!Number.isNaN(parsed.getTime())) {
+        setCurrentTimeValue(parsed);
+        setPendingTimeValue(parsed);
+      } else {
+        const nextTime = new Date();
+        setCurrentTimeValue(nextTime);
+        setPendingTimeValue(nextTime);
+      }
+    } else {
+      const nextTime = new Date();
+      setCurrentTimeValue(nextTime);
+      setPendingTimeValue(nextTime);
+    }
+    setShowTimePicker(true);
+  };
+
+  const applyTimeValue = (selectedTime: Date) => {
+    setCurrentTimeValue(selectedTime);
+    const formatted = selectedTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    setBiddingTime(formatted);
+  };
+
+  const handleTimeChange = (event: any, selectedTime?: Date) => {
+    if (!selectedTime) {
+      if (Platform.OS === 'android') setShowTimePicker(false);
+      return;
+    }
+    setPendingTimeValue(selectedTime);
+    if (Platform.OS === 'android') {
+      applyTimeValue(selectedTime);
+      setShowTimePicker(false);
     }
   };
 
   const fetchGroups = async () => {
     try {
-      const { data, error } = await supabase.from('chit_groups').select('*').order('created_at', { ascending: false });
+      const { data, error } = await supabase
+        .from('chit_groups')
+        .select('*, chit_members(id)')
+        .order('created_at', { ascending: false });
       if (error) throw error;
       if (data) setGroups(data);
     } catch (err) {
@@ -120,6 +184,17 @@ export default function AdminGroups() {
     setRefreshing(true);
     await fetchGroups();
     setRefreshing(false);
+  };
+
+  const parsePickerDate = (dateStr: string) => {
+    if (!dateStr) return null;
+    const parts = dateStr.split('/');
+    if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    if (parts.length === 2) {
+      const year = new Date().getFullYear();
+      return `${year}-${parts[1]}-${parts[0]}`;
+    }
+    return null;
   };
 
   const parseDateStr = (dateStr: string) => {
@@ -174,9 +249,9 @@ export default function AdminGroups() {
         no_of_installments: Number(installments),
         emi_amount: Number(emiAmount) * 100 || 0,
         agent_commission_rate: Number(agentCommission) || 0,
-        foreman_commission_amount: Number(foremanCommission) * 100 || 0,
+        foreman_commission_amount: 0,
         frequency,
-        bidding_day: biddingDay,
+        bidding_day: biddingDate,
         bidding_time: biddingTime,
         capacity,
         terms_conditions: terms,
@@ -222,11 +297,12 @@ export default function AdminGroups() {
         <View style={styles.appBarLeft}>
           <View style={styles.avatarContainer}>
             <Image
-              source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBqFl0ECv0RRbv5ZhFRwj3-dkskzzXKWk6vFF-Mj9lRN92bA3T2cgF9rs6nPm9LzRzbFMo8JntoQPSkd-6R-CQMyckTlj1qvdFKcRT_uVtlnUlRs2KF76w8RNJAVFK-9MwHg5Z5MTOEXjevBWbHvYk-KA7YlJTtkgKL96Tju6PXqWbN4OrAIUUX8AX5OFbtG-pDgjmLcrDCDDrQkFWrkbNqvdE2x82COQ9Y-nzG0rie8SlovZZPmWuwpplLMJyaNQfZUBtwKi7xHio' }}
+              source={require('../../../assets/cropped_logo.png')}
               style={styles.avatar}
+              contentFit="contain"
             />
           </View>
-          <Text style={styles.appBarTitle}>VSYK Chits</Text>
+          <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
         <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#00789E">
@@ -295,7 +371,15 @@ export default function AdminGroups() {
                     <Text style={styles.labelSmall}>{group.duration_months} Months</Text>
                   </View>
                   <View style={styles.progressBarBg}>
-                    <View style={[styles.progressBarFill, { width: '0%', backgroundColor: '#01789E' }]} />
+                    <View
+                      style={[
+                        styles.progressBarFill,
+                        {
+                          width: `${Math.min(100, ((group.chit_members?.length || 0) / (group.capacity || 1)) * 100)}%`,
+                          backgroundColor: '#01789E'
+                        }
+                      ]}
+                    />
                   </View>
                 </View>
 
@@ -306,7 +390,7 @@ export default function AdminGroups() {
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text style={styles.footerLabel}>SUBSCRIBERS</Text>
-                    <Text style={styles.footerVal}>0 / {group.capacity || 50}</Text>
+                    <Text style={styles.footerVal}>{group.chit_members?.length || 0} / {group.capacity || 50}</Text>
                   </View>
                 </View>
               </TouchableOpacity>
@@ -352,15 +436,14 @@ export default function AdminGroups() {
                 </View>
               </View>
 
-              <View style={styles.rowInputs}>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>AGENT IN CHARGE</Text>
-                  <TextInput style={styles.input} placeholder="Agent Name" value={agentInCharge} onChangeText={setAgentInCharge} />
-                </View>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>FOREMAN NAME</Text>
-                  <TextInput style={styles.input} placeholder="Foreman Name" value={foremanName} onChangeText={setForemanName} />
-                </View>
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>IN-CHARGE NAME</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Foreman / Agent Name"
+                  value={agentInCharge}
+                  onChangeText={(val) => { setAgentInCharge(val); setForemanName(val); }}
+                />
               </View>
 
               <View style={styles.inputGroup}>
@@ -443,10 +526,6 @@ export default function AdminGroups() {
                 </View>
               </View>
 
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>BANK NAME</Text>
-                <TextInput style={styles.input} value={bankName} onChangeText={setBankName} />
-              </View>
             </View>
 
             {/* Section 3: FINANCIALS */}
@@ -458,45 +537,70 @@ export default function AdminGroups() {
 
               <View style={styles.rowInputs}>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>TOTAL CHIT AMOUNT</Text>
-                  <TextInput style={styles.input} placeholder="5,00,000" keyboardType="number-pad" value={chitAmount} onChangeText={setChitAmount} />
+                  <Text style={styles.inputLabel}>CHIT VALUE (₹)</Text>
+                  <TextInput style={styles.input} placeholder="2,50,000" keyboardType="number-pad" value={chitAmount} onChangeText={setChitAmount} />
                 </View>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>DEPOSITED AMOUNT</Text>
+                  <Text style={styles.inputLabel}>NO. OF MONTHS</Text>
+                  <TextInput style={styles.input} keyboardType="number-pad" value={installments} onChangeText={setInstallments} />
+                </View>
+              </View>
+
+              <View style={styles.rowInputs}>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>MONTHLY INSTALLMENT (₹)</Text>
+                  <TextInput style={styles.input} keyboardType="number-pad" value={emiAmount} onChangeText={setEmiAmount} />
+                </View>
+                <View style={[styles.inputGroup, { flex: 1 }]}>
+                  <Text style={styles.inputLabel}>DEPOSITED AMOUNT (₹)</Text>
                   <TextInput style={styles.input} keyboardType="number-pad" value={depositedAmount} onChangeText={setDepositedAmount} />
                 </View>
               </View>
 
               <View style={styles.rowInputs}>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>NO. OF INSTALLMENTS</Text>
-                  <TextInput style={styles.input} keyboardType="number-pad" value={installments} onChangeText={setInstallments} />
+                  <Text style={styles.inputLabel}>COMMISSION RATE (%)</Text>
+                  <TextInput style={styles.input} keyboardType="number-pad" value={agentCommission} onChangeText={setAgentCommission} />
                 </View>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>EMI AMOUNT</Text>
-                  <TextInput style={styles.input} keyboardType="number-pad" value={emiAmount} onChangeText={setEmiAmount} />
-                </View>
-              </View>
-
-              <View style={styles.rowInputs}>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>INTEREST RATE (%)</Text>
                   <TextInput style={styles.input} keyboardType="number-pad" value={interestRate} onChangeText={setInterestRate} />
                 </View>
-                <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>FREQUENCY</Text>
-                  <TextInput style={styles.input} placeholder="e.g. Monthly" value={frequency} onChangeText={setFrequency} />
-                </View>
               </View>
 
               <View style={styles.rowInputs}>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>AGENT COMM. RATE (%)</Text>
-                  <TextInput style={styles.input} keyboardType="number-pad" value={agentCommission} onChangeText={setAgentCommission} />
+                  <Text style={styles.inputLabel}>FREQUENCY</Text>
+                  <TouchableOpacity
+                    style={[styles.input, { justifyContent: 'center' }]}
+                    onPress={() => setShowFrequencyOptions((prev) => !prev)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ color: frequency ? '#0F172A' : '#94A3B8' }}>{frequency || 'Select Frequency'}</Text>
+                  </TouchableOpacity>
+                  {showFrequencyOptions && (
+                    <View style={styles.dropdownList}>
+                      {frequencyOptions.map((option) => (
+                        <TouchableOpacity
+                          key={option}
+                          style={[
+                            styles.dropdownOption,
+                            option === frequency ? styles.dropdownOptionActive : null
+                          ]}
+                          onPress={() => {
+                            setFrequency(option);
+                            setShowFrequencyOptions(false);
+                          }}
+                        >
+                          <Text style={styles.dropdownOptionText}>{option}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
                 </View>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>FOREMAN COMM. (₹)</Text>
-                  <TextInput style={styles.input} keyboardType="number-pad" value={foremanCommission} onChangeText={setForemanCommission} />
+                  <Text style={styles.inputLabel}>BANK NAME</Text>
+                  <TextInput style={styles.input} value={bankName} onChangeText={setBankName} />
                 </View>
               </View>
             </View>
@@ -510,12 +614,16 @@ export default function AdminGroups() {
 
               <View style={styles.rowInputs}>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
-                  <Text style={styles.inputLabel}>BIDDING DAY</Text>
-                  <TextInput style={styles.input} placeholder="e.g. 15th of month" value={biddingDay} onChangeText={setBiddingDay} />
+                  <Text style={styles.inputLabel}>BIDDING DATE (DAY + MONTH)</Text>
+                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openPicker('biddingDate', biddingDate)}>
+                    <Text style={{ color: biddingDate ? '#0F172A' : '#94A3B8' }}>{biddingDate || 'Select Date'}</Text>
+                  </TouchableOpacity>
                 </View>
                 <View style={[styles.inputGroup, { flex: 1 }]}>
                   <Text style={styles.inputLabel}>BIDDING TIME</Text>
-                  <TextInput style={styles.input} placeholder="10:00 AM" value={biddingTime} onChangeText={setBiddingTime} />
+                  <TouchableOpacity style={[styles.input, { justifyContent: 'center' }]} onPress={() => openTimePicker(biddingTime)}>
+                    <Text style={{ color: biddingTime ? '#0F172A' : '#94A3B8' }}>{biddingTime || 'Select Time'}</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -556,6 +664,85 @@ export default function AdminGroups() {
             </TouchableOpacity>
           </View>
 
+          {showDatePicker && Platform.OS === 'ios' && (
+            <View style={styles.pickerOverlay}>
+              <View style={styles.pickerSheet}>
+                <View style={{ height: 216, justifyContent: 'center' }}>
+                  <DateTimePicker
+                    value={pendingDateValue}
+                    mode="date"
+                    display="inline"
+                    onChange={handleDateChange}
+                    textColor="#0B1C30"
+                    themeVariant="light"
+                    style={{ height: 216, alignSelf: 'stretch', backgroundColor: '#FFFFFF' }}
+                  />
+                </View>
+                <View style={styles.pickerActions}>
+                  <TouchableOpacity style={[styles.cancelBtn, { flex: 1 }]} onPress={() => setShowDatePicker(false)}>
+                    <Text style={styles.cancelBtnText}>CANCEL</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.saveBtn, { flex: 1 }]}
+                    onPress={() => {
+                      applyDateValue(pendingDateValue);
+                      setShowDatePicker(false);
+                    }}
+                  >
+                    <Text style={styles.saveBtnText}>DONE</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          )}
+          {showTimePicker && Platform.OS === 'ios' && (
+            <View style={styles.pickerOverlay}>
+              <View style={styles.pickerSheet}>
+                <View style={{ height: 216, justifyContent: 'center' }}>
+                  <DateTimePicker
+                    value={pendingTimeValue}
+                    mode="time"
+                    display="spinner"
+                    onChange={handleTimeChange}
+                    textColor="#0B1C30"
+                    themeVariant="light"
+                    style={{ height: 216, alignSelf: 'stretch', backgroundColor: '#FFFFFF' }}
+                  />
+                </View>
+                <View style={styles.pickerActions}>
+                  <TouchableOpacity style={[styles.cancelBtn, { flex: 1 }]} onPress={() => setShowTimePicker(false)}>
+                    <Text style={styles.cancelBtnText}>CANCEL</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.saveBtn, { flex: 1 }]}
+                    onPress={() => {
+                      applyTimeValue(pendingTimeValue);
+                      setShowTimePicker(false);
+                    }}
+                  >
+                    <Text style={styles.saveBtnText}>DONE</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          )}
+          {showDatePicker && Platform.OS === 'android' && (
+            <DateTimePicker
+              value={currentDateValue}
+              mode="date"
+              display="default"
+              onChange={handleDateChange}
+            />
+          )}
+          {showTimePicker && Platform.OS === 'android' && (
+            <DateTimePicker
+              value={currentTimeValue}
+              mode="time"
+              display="default"
+              onChange={handleTimeChange}
+            />
+          )}
+
         </KeyboardAvoidingView>
       </Modal>
 
@@ -572,7 +759,12 @@ const styles = StyleSheet.create({
     shadowColor: '#01789E', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 20, elevation: 5,
   },
   appBarLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  avatarContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#C1E8FF', overflow: 'hidden' },
+  avatarContainer: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   avatar: { width: '100%', height: '100%' },
   appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#155E75', letterSpacing: -0.5 },
   iconButton: { padding: 8, borderRadius: 20 },
@@ -637,6 +829,26 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 12,
     paddingHorizontal: 16, paddingVertical: 14, fontFamily: 'Inter_400Regular', fontSize: 16, color: '#0B1C30',
   },
+  dropdownList: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
+  },
+  dropdownOption: {
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  dropdownOptionActive: {
+    backgroundColor: '#F1F5F9',
+  },
+  dropdownOptionText: {
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 14,
+    color: '#0B1C30',
+  },
 
   infoBox: { flexDirection: 'row', backgroundColor: '#EFF4FF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#D3E4FE' },
   infoCol: { flex: 1, alignItems: 'center' },
@@ -657,4 +869,17 @@ const styles = StyleSheet.create({
   cancelBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#64748B', letterSpacing: 1 },
   saveBtn: { flex: 2, paddingVertical: 16, borderRadius: 16, backgroundColor: '#005E7D', alignItems: 'center', justifyContent: 'center', shadowColor: '#005E7D', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.25, shadowRadius: 24, elevation: 8 },
   saveBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 1 },
+  pickerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
+    justifyContent: 'flex-end',
+    zIndex: 200,
+  },
+  pickerSheet: {
+    backgroundColor: '#FFFFFF',
+    padding: 16,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+  },
+  pickerActions: { flexDirection: 'row', gap: 12, marginTop: 12 },
 });

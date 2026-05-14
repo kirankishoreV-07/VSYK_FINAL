@@ -149,33 +149,39 @@ export default function CustomerDetailsScreen() {
                         {transactions.map((tx, index) => {
                           const isLast = index === transactions.length - 1;
                           const isDividend = tx.payment_type === 'dividend';
+                          const isPartial = !isDividend && tx.amount < group.monthly_installment;
+                          
+                          let nodeColor = '#3B82F6'; // Blue for Full Installment
+                          let title = 'FULL INSTALLMENT';
+                          let desc = `Successfully paid ${formatPaise(tx.amount)} towards the chit group.`;
+                          
+                          if (isDividend) {
+                            nodeColor = '#10B981'; // Green for Dividend
+                            title = 'DIVIDEND DISTRIBUTED';
+                            desc = `Received dividend payout of ${formatPaise(tx.amount)} directly.`;
+                          } else if (isPartial) {
+                            nodeColor = '#F59E0B'; // Orange for Partial
+                            title = 'PARTIAL PAYMENT';
+                            desc = `Paid ${formatPaise(tx.amount)} out of ${formatPaise(group.monthly_installment)} expected.`;
+                          }
+                          
+                          // Format date nicely (e.g., OCT 14, 2026)
+                          const d = new Date(tx.transaction_date);
+                          const dateString = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase();
+
                           return (
                             <View key={tx.id} style={styles.timelineItem}>
                               <View style={styles.timelineGraphics}>
-                                <View style={[styles.timelineDot, { backgroundColor: isDividend ? '#FEF2F2' : '#F0FDF4', borderColor: isDividend ? '#DC2626' : '#16A34A' }]}>
-                                  <Svg width={12} height={12} viewBox="0 0 24 24" fill={isDividend ? '#DC2626' : '#16A34A'}>
-                                    {isDividend 
-                                      ? <Path d="M19 15l-1.41-1.41L13 18.17V2h-2v16.17l-4.59-4.59L5 15l7 7 7-7z"/> 
-                                      : <Path d="M5 9l1.41 1.41L11 5.83V22h2V5.83l4.59 4.59L19 9l-7-7-7 7z"/>
-                                    }
-                                  </Svg>
+                                <View style={[styles.timelineDot, { borderColor: nodeColor }]}>
+                                  <View style={[styles.timelineInnerDot, { backgroundColor: nodeColor }]} />
                                 </View>
                                 {!isLast && <View style={styles.timelineLine} />}
                               </View>
 
                               <View style={[styles.timelineContent, isLast && { paddingBottom: 0 }]}>
-                                <View style={styles.txHeader}>
-                                  <Text style={styles.txTypeBold}>{isDividend ? 'Dividend Payout' : 'Installment Paid'}</Text>
-                                  <Text style={[styles.txAmountBold, { color: isDividend ? '#DC2626' : '#16A34A' }]}>
-                                    {isDividend ? '-' : '+'}{formatPaise(tx.amount)}
-                                  </Text>
-                                </View>
-                                <View style={styles.txFooter}>
-                                  <Text style={styles.txDateMuted}>{formatShortDate(tx.transaction_date)}</Text>
-                                  <View style={styles.txStatusBadge}>
-                                    <Text style={styles.txStatusText}>Completed</Text>
-                                  </View>
-                                </View>
+                                <Text style={[styles.timelineDate, { color: nodeColor }]}>{dateString}</Text>
+                                <Text style={[styles.timelineTitle, { color: nodeColor }]}>{title}</Text>
+                                <Text style={styles.timelineDesc}>{desc}</Text>
                               </View>
                             </View>
                           );
@@ -233,18 +239,28 @@ const styles = StyleSheet.create({
   },
   txTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#164E63', marginBottom: 20 },
   
-  timelineContainer: { paddingLeft: 4 },
+  timelineContainer: { paddingLeft: 4, marginTop: 8 },
   timelineItem: { flexDirection: 'row' },
-  timelineGraphics: { alignItems: 'center', width: 24, marginRight: 16 },
-  timelineDot: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, alignItems: 'center', justifyContent: 'center', zIndex: 2 },
-  timelineLine: { width: 2, flex: 1, backgroundColor: '#E2E8F0', marginTop: -2, marginBottom: -2 },
+  timelineGraphics: { alignItems: 'center', width: 24, marginRight: 20 },
+  timelineDot: { 
+    width: 20, height: 20, borderRadius: 10, borderWidth: 2, 
+    alignItems: 'center', justifyContent: 'center', zIndex: 2,
+    backgroundColor: '#FFFFFF'
+  },
+  timelineInnerDot: { width: 10, height: 10, borderRadius: 5 },
+  timelineLine: { width: 2, flex: 1, backgroundColor: '#334155', marginTop: -2, marginBottom: -2 },
   
-  timelineContent: { flex: 1, paddingBottom: 24, paddingTop: 2 },
-  txHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
-  txTypeBold: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: '#0F172A' },
-  txAmountBold: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16 },
-  txFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  txDateMuted: { fontFamily: 'Inter_500Medium', fontSize: 13, color: '#64748B' },
-  txStatusBadge: { backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
-  txStatusText: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#475569', textTransform: 'uppercase' },
+  timelineContent: { flex: 1, paddingBottom: 32, paddingTop: 0 },
+  timelineDate: { 
+    fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24, letterSpacing: -0.5, 
+    lineHeight: 28, marginBottom: 8,
+    borderBottomWidth: 1, borderBottomColor: '#CBD5E1', borderStyle: 'dashed', paddingBottom: 8
+  },
+  timelineTitle: { 
+    fontFamily: 'Inter_700Bold', fontSize: 12, letterSpacing: 1.5, 
+    marginBottom: 4, marginTop: 4 
+  },
+  timelineDesc: { 
+    fontFamily: 'Inter_400Regular', fontSize: 13, color: '#64748B', lineHeight: 20 
+  },
 });

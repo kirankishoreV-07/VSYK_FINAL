@@ -184,11 +184,12 @@ export default function AdminCustomers() {
         <View style={styles.appBarLeft}>
           <View style={styles.avatarContainer}>
             <Image
-              source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuDn9MxXTloX0_04vA56Gsgf8xoTD-7XglXxMPC17li8mk0f00aSe7z1u6Dtsv27IokOtEarErsDnOhbPSfTsqoRzK1NfWA4YP5QWNDIe6_f6zykvCxPak-iiCaaEfdoSKbUdfIRxppLLuvENeSX4rQXf6uzPoP0TpxiJAJ455F3Oe3SiishogzKNX3UU5imMQvXb1mGWBrJIH308OhhBBYnuC3sWhrc39QrzqwYxw18absqQWFhB09VcZ8JgU2qKsIY5z_m5GbT0-w' }}
+              source={require('../../assets/cropped_logo.png')}
               style={styles.avatar}
+              contentFit="contain"
             />
           </View>
-          <Text style={styles.appBarTitle}>VSYK Chits</Text>
+          <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
         <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#00789E">
@@ -479,7 +480,12 @@ const styles = StyleSheet.create({
     shadowColor: '#01789E', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 20, elevation: 5,
   },
   appBarLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  avatarContainer: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#C1E8FF', overflow: 'hidden' },
+  avatarContainer: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   avatar: { width: '100%', height: '100%' },
   appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#155E75', letterSpacing: -0.5 },
   iconButton: { padding: 8, borderRadius: 20, backgroundColor: '#F8FAFC' },

@@ -1,5 +1,5 @@
 /**
- * VSYK Chits Design System Constants
+ * VSYK CHITS Design System Constants
  * Extracted pixel-perfectly from all HTML design reference files.
  */
 

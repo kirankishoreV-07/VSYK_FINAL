@@ -7,10 +7,12 @@ import {
   Dimensions,
   FlatList,
   Animated,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Path, Circle, Rect, G } from 'react-native-svg';
 import { Colors, Spacing, Radii, Shadows } from '../../lib/constants';
 
@@ -21,25 +23,22 @@ const SLIDES = [
   {
     key: 'slide1',
     step: '1 of 3',
-    title: 'Automated Financial\nDiscipline',
-    subtitle:
-      'Harness the power of community savings to build your wealth systematically with zero market risk.',
+    title: 'Leadership with Vision',
+    subtitle: '', // Handled by rich text renderer
     cta: 'Get Started',
   },
   {
     key: 'slide2',
     step: '2 of 3',
-    title: 'Maximize Your\nReturns',
-    subtitle:
-      'Earn monthly dividends that often outperform fixed deposits and traditional savings accounts.',
-    cta: 'Continue Journey',
+    title: 'Automated Financial\nDiscipline',
+    subtitle: 'Harness the power of community savings to build your wealth systematically with zero market risk.',
+    cta: 'Next',
   },
   {
     key: 'slide3',
     step: '3 of 3',
-    title: 'Liquidity on Demand',
-    subtitle:
-      'Need funds fast? Bid in our transparent auctions to access your corpus exactly when you need it most.',
+    title: 'Maximize Your\nReturns',
+    subtitle: 'Earn monthly dividends that often outperform fixed deposits and traditional savings accounts.',
     cta: 'Get Started',
   },
 ];
@@ -47,6 +46,24 @@ const SLIDES = [
 // ─── Slide Visualizations ─────────────────────────────────────
 
 function Slide1Visual() {
+  return (
+    <View style={{ flex: 1, marginBottom: 24 }}>
+      <LinearGradient 
+        colors={['rgba(1, 120, 158, 0.3)', 'rgba(229, 238, 255, 0.2)', 'rgba(84, 250, 239, 0.2)']}
+        start={{ x: 1, y: 0 }}
+        end={{ x: 0, y: 1 }}
+        style={[styles.visualCard, { flex: 1, padding: 0, justifyContent: 'flex-end', alignItems: 'center', marginBottom: 0 }]}
+      >
+         <Image 
+           source={require('../../assets/images/md_photo.png')}
+           style={{ width: '100%', height: '100%', resizeMode: 'contain', marginBottom: -20 }}
+         />
+      </LinearGradient>
+    </View>
+  );
+}
+
+function Slide2Visual() {
   return (
     <View style={styles.visualCard}>
       {/* Bar Chart */}
@@ -99,7 +116,7 @@ function Slide1Visual() {
   );
 }
 
-function Slide2Visual() {
+function Slide3Visual() {
   return (
     <View style={styles.visualCard}>
       {/* Comparison Chart */}
@@ -166,63 +183,6 @@ function Slide2Visual() {
   );
 }
 
-function Slide3Visual() {
-  return (
-    <View style={styles.visualCard}>
-      {/* Auction Header */}
-      <View style={styles.auctionHeader}>
-        <View style={styles.auctionBadge}>
-          <View style={styles.auctionPulse} />
-          <Text style={styles.auctionBadgeText}>ACTIVE AUCTION</Text>
-        </View>
-        <Text style={styles.auctionTimer}>04:59:21</Text>
-      </View>
-
-      {/* Progress Bar */}
-      <View style={styles.auctionProgressContainer}>
-        <View style={styles.auctionProgressTrack}>
-          <View style={[styles.auctionProgressFill, { width: '75%' }]} />
-        </View>
-        <View style={styles.auctionProgressLabels}>
-          <Text style={styles.auctionProgressLabel}>MIN BID: ₹1,200</Text>
-          <Text style={styles.auctionProgressLabel}>GOAL: ₹10,000</Text>
-        </View>
-      </View>
-
-      {/* Liquidity Nodes Grid */}
-      <View style={styles.liquidityGrid}>
-        <View style={styles.liquidityCard}>
-          <Svg width={22} height={22} viewBox="0 0 24 24" fill={Colors.secondary}>
-            <Path d="M7 2v11h3v9l7-12h-4l4-8z" />
-          </Svg>
-          <Text style={styles.liquidityLabel}>Instant Payout</Text>
-          <Text style={styles.liquidityValue}>₹2,450</Text>
-        </View>
-        <View style={styles.liquidityCard}>
-          <Svg width={22} height={22} viewBox="0 0 24 24" fill={Colors.primary}>
-            <Path d="M21 18v1c0 1.1-.9 2-2 2H5c-1.11 0-2-.9-2-2V5c0-1.1.89-2 2-2h14c1.1 0 2 .9 2 2v1h-9c-1.11 0-2 .9-2 2v8c0 1.1.89 2 2 2h9zm-9-2h10V8H12v8zm4-2.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" />
-          </Svg>
-          <Text style={styles.liquidityLabel}>Available Funds</Text>
-          <Text style={styles.liquidityValue}>92%</Text>
-        </View>
-      </View>
-
-      {/* Last Bid Row */}
-      <View style={styles.lastBidRow}>
-        <View style={styles.lastBidAvatar}>
-          <Svg width={22} height={22} viewBox="0 0 24 24" fill="#FFFFFF">
-            <Path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
-          </Svg>
-        </View>
-        <View>
-          <Text style={styles.lastBidTitle}>Last Bid Received</Text>
-          <Text style={styles.lastBidSub}>Just now by User #842</Text>
-        </View>
-      </View>
-    </View>
-  );
-}
-
 const VISUALS = [Slide1Visual, Slide2Visual, Slide3Visual];
 
 // ─── Main Component ───────────────────────────────────────────
@@ -238,7 +198,7 @@ export default function OnboardingScreen() {
       flatListRef.current?.scrollToIndex({ index: currentIndex + 1 });
       setCurrentIndex(currentIndex + 1);
     } else {
-      router.replace('/(tabs)');
+      router.replace('/(auth)/login');
     }
   };
 
@@ -252,7 +212,7 @@ export default function OnboardingScreen() {
 
   const skip = () => {
     Haptics.selectionAsync();
-    router.replace('/(tabs)');
+    router.replace('/(auth)/login');
   };
 
   return (
@@ -299,15 +259,32 @@ export default function OnboardingScreen() {
               {/* Text Content */}
               <View style={styles.textSection}>
                 <Text style={styles.title}>{item.title}</Text>
-                <Text style={styles.subtitle}>{item.subtitle}</Text>
+                {item.key === 'slide1' ? (
+                  <Text style={styles.subtitle}>
+                    Guided by <Text style={{ fontFamily: 'Inter_700Bold', color: '#005E7D' }}>Managing Director Mr. R. Venkatesan</Text>, who brings <Text style={{ fontFamily: 'Inter_700Bold', color: '#005E7D' }}>over 25 years of profound experience</Text> in the financial services and chit fund industry.
+                  </Text>
+                ) : (
+                  <Text style={styles.subtitle}>{item.subtitle}</Text>
+                )}
               </View>
             </View>
           );
         }}
       />
 
-      {/* Bottom Section: Dots + CTA */}
+      {/* Bottom Section: CTA + Dots */}
       <View style={styles.bottomSection}>
+        <TouchableOpacity
+          style={styles.ctaBtn}
+          onPress={goNext}
+          activeOpacity={0.9}
+        >
+          <Text style={styles.ctaBtnText}>{SLIDES[currentIndex].cta}</Text>
+          <Svg width={22} height={22} viewBox="0 0 24 24" fill="#FFFFFF">
+            <Path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z" />
+          </Svg>
+        </TouchableOpacity>
+
         {/* Pagination Dots */}
         <View style={styles.dotsRow}>
           {SLIDES.map((_, i) => {
@@ -323,24 +300,6 @@ export default function OnboardingScreen() {
             );
           })}
         </View>
-
-        {/* CTA Button */}
-        <TouchableOpacity
-          style={styles.ctaBtn}
-          onPress={goNext}
-          activeOpacity={0.9}
-        >
-          <Text style={styles.ctaBtnText}>{SLIDES[currentIndex].cta}</Text>
-          <Svg width={22} height={22} viewBox="0 0 24 24" fill="#FFFFFF">
-            <Path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z" />
-          </Svg>
-        </TouchableOpacity>
-
-        {currentIndex === SLIDES.length - 1 && (
-          <TouchableOpacity style={styles.secondaryBtn} onPress={skip} activeOpacity={0.8}>
-            <Text style={styles.secondaryBtnText}>Learn More About Auctions</Text>
-          </TouchableOpacity>
-        )}
       </View>
     </SafeAreaView>
   );
@@ -392,7 +351,6 @@ const styles = StyleSheet.create({
     borderRadius: 40,
     padding: 20,
     marginBottom: 24,
-    minHeight: 280,
     borderWidth: 1,
     borderColor: 'rgba(190,200,206,0.3)',
     overflow: 'hidden',
@@ -404,7 +362,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'center',
-    height: 160,
+    height: 140, // Reduced from 160
     gap: 8,
     marginBottom: 8,
   },
@@ -477,7 +435,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'center',
-    height: 240,
+    height: 180, // Reduced from 240
     gap: 24,
     paddingHorizontal: 16,
   },
@@ -680,29 +638,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 8,
     gap: 12,
+    marginBottom: 16, // Reduced from 32 to fit CTA in bottom section
   },
   title: {
     fontFamily: 'SpaceGrotesk_700Bold',
-    fontSize: 30,
-    lineHeight: 38,
+    fontSize: 28,
+    lineHeight: 36,
     color: '#0B1C30',
     textAlign: 'center',
     letterSpacing: -0.5,
   },
   subtitle: {
     fontFamily: 'Inter_400Regular',
-    fontSize: 16,
+    fontSize: 15,
     lineHeight: 24,
     color: '#3F484E',
     textAlign: 'center',
-    maxWidth: 300,
+    maxWidth: 320,
   },
 
   // ── Bottom Section ──
   bottomSection: {
     paddingHorizontal: 20,
-    paddingBottom: 24,
-    gap: 16,
+    paddingBottom: 24, // Safe area space
+    gap: 16, // Space between button and dots
     alignItems: 'center',
   },
   dotsRow: {

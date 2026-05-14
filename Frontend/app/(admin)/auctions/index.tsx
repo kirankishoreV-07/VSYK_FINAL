@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl, ActivityIndicator, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
@@ -160,7 +161,16 @@ export default function AdminAuctionsIndex() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* App Bar */}
       <View style={styles.appBar}>
-        <Text style={styles.appBarTitle}>Auctions & Requests</Text>
+        <View style={styles.appBarLeft}>
+          <View style={styles.avatarContainer}>
+            <Image
+              source={require('../../../assets/cropped_logo.png')}
+              style={styles.avatar}
+              contentFit="contain"
+            />
+          </View>
+          <Text style={styles.appBarTitle}>Auctions & Requests</Text>
+        </View>
         <TouchableOpacity
           style={[styles.liveBtn, !liveAuction && styles.liveBtnDim]}
           onPress={() => { Haptics.selectionAsync(); router.push('/(admin)/auctions/live'); }}
@@ -242,7 +252,7 @@ export default function AdminAuctionsIndex() {
                         </View>
                       </View>
                       <Text style={styles.timeAgo}>
-                        {new Date(req.created_at).toLocaleDateString('en-IN')}
+                        {req.created_at ? new Date(req.created_at).toLocaleDateString('en-IN') : 'N/A'}
                       </Text>
                     </View>
 
@@ -383,7 +393,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, height: 64, backgroundColor: '#FFFFFF',
     borderBottomWidth: 1, borderBottomColor: '#F1F5F9',
   },
-  appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#0F172A' },
+  appBarLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  avatarContainer: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatar: { width: '100%', height: '100%' },
+  appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#0F172A', letterSpacing: -0.5 },
   liveBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     backgroundColor: '#00D1C1', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 100,

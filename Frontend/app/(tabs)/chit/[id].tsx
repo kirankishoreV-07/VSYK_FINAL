@@ -4,7 +4,7 @@ import { supabase } from '../../../lib/supabase';
 import { formatPaise, formatShortDate } from '../../../lib/hooks/useDashboard';
 import {
   View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, Alert, ActivityIndicator, Platform, Modal,
+  StyleSheet, Alert, ActivityIndicator, Platform, Modal, TextInput, KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -12,6 +12,7 @@ import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { Colors, Shadows } from '../../../lib/constants';
 import { useMemberSession } from '../../../lib/MemberSessionContext';
+import { apiPost } from '../../../lib/api';
 
 const RAZORPAY_KEY = 'rzp_test_SmauVIQGRqu5gR';
 
@@ -23,6 +24,14 @@ type PaymentRow = {
   paid: boolean;
   paid_at: string | null;
   dividend_amount?: number;
+};
+
+type AuctionSettlement = {
+  id: string;
+  auction_number: number | null;
+  installment_due: number | null;
+  final_due_amount: number | null;
+  scheduled_at: string | null;
 };
 
 type ChitDetailData = {
@@ -95,27 +104,52 @@ function useChitDetail(membershipId: string, memberId: string | null) {
   });
 }
 
-/** Calculate the display month period for a payment row (1st to last day of that month) */
-function getMonthPeriod(payment: PaymentRow): { from: string; to: string; monthName: string } {
-  const dueDate = new Date(payment.due_date);
-  // dueDate is the last day of the month (we set it to 0 = last day when generating)
-  const endOfMonth = new Date(dueDate);
-  const startOfMonth = new Date(dueDate.getFullYear(), dueDate.getMonth(), 1);
+function useGroupAuctions(groupId?: string) {
+  return useQuery<AuctionSettlement[]>({
+    queryKey: ['chit-auctions', groupId],
+    queryFn: async () => {
+      if (!groupId) return [];
+      const { data, error } = await supabase
+        .from('auctions')
+        .select('id, auction_number, installment_due, final_due_amount, scheduled_at')
+        .eq('chit_group_id', groupId);
+      if (error) throw error;
+      return (data ?? []) as AuctionSettlement[];
+    },
+    enabled: !!groupId,
+  });
+}
+
+const addMonthsKeepDay = (date: Date, months: number) => {
+  const year = date.getFullYear();
+  const month = date.getMonth() + months;
+  const day = date.getDate();
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const targetDay = Math.min(day, lastDay);
+  return new Date(year, month, targetDay);
+};
+
+/** Calculate the display period using auction start date when available */
+function getMonthPeriod(payment: PaymentRow, startOverride?: Date | null): { from: string; to: string; monthName: string; endDate: Date } {
+  const baseStart = startOverride ?? new Date(payment.due_date);
+  const startDate = new Date(baseStart);
+  const endDate = addMonthsKeepDay(startDate, 1);
   const fmt = (d: Date) => d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-  const monthName = dueDate.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-  return { from: fmt(startOfMonth), to: fmt(endOfMonth), monthName };
+  const monthName = startDate.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  return { from: fmt(startDate), to: fmt(endDate), monthName, endDate };
 }
 
 function MonthTimelineItem({
-  p, isCurrentDue, onPay, paying,
-}: { p: PaymentRow; isCurrentDue: boolean; onPay: (p: PaymentRow) => void; paying: boolean; }) {
-  const period = getMonthPeriod(p);
+  p, isCurrentDue, onPay, paying, payableAmount, startDate,
+}: { p: PaymentRow; isCurrentDue: boolean; onPay: (p: PaymentRow, payableAmount: number) => void; paying: boolean; payableAmount: number; startDate?: Date | null; }) {
+  const period = getMonthPeriod(p, startDate);
   const isPaid = p.paid;
   const today = Date.now();
-  const daysLeft = Math.ceil((new Date(p.due_date).getTime() - today) / 86400000);
+  const daysLeft = Math.ceil((period.endDate.getTime() - today) / 86400000);
   const overdue = daysLeft < 0 && !isPaid;
   const canPay = (isCurrentDue || overdue) && !isPaid;
   const isUpcoming = !isPaid && !isCurrentDue && !overdue;
+  const isZeroPayable = payableAmount <= 0;
 
   return (
     <View style={ts.item}>
@@ -152,7 +186,7 @@ function MonthTimelineItem({
               canPay && { color: overdue ? '#EF4444' : Colors.primary, fontSize: 20 },
               isUpcoming && { color: '#94A3B8' },
             ]}>
-              {formatPaise(p.amount)}
+              {formatPaise(payableAmount)}
             </Text>
             {overdue && <View style={ts.overdueBadge}><Text style={ts.overdueText}>OVERDUE</Text></View>}
             {isCurrentDue && !overdue && daysLeft >= 0 && (
@@ -178,18 +212,27 @@ function MonthTimelineItem({
             )}
           </View>
         ) : canPay ? (
-          <TouchableOpacity style={[ts.payBtn, overdue && ts.payBtnOverdue, paying && { opacity: 0.6 }]}
-            onPress={() => onPay(p)} disabled={paying} activeOpacity={0.85}>
+          <TouchableOpacity
+            style={[
+              ts.payBtn,
+              overdue && ts.payBtnOverdue,
+              isZeroPayable && ts.payBtnDisabled,
+              paying && { opacity: 0.6 },
+            ]}
+            onPress={() => onPay(p, payableAmount)}
+            disabled={paying || isZeroPayable}
+            activeOpacity={0.85}
+          >
             {paying ? <ActivityIndicator color="#FFF" size="small" /> : (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, justifyContent: 'center' }}>
                 <Svg width={18} height={18} viewBox="0 0 24 24" fill="#FFF">
                   <Path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" />
                 </Svg>
                 <Text style={ts.payBtnText}>
-                  {overdue ? 'PAY NOW · OVERDUE' : 'PAY NOW'}
+                  {overdue ? 'PAY NOW - OVERDUE' : 'PAY NOW'}
                 </Text>
                 <View style={ts.payBtnAmtBadge}>
-                  <Text style={ts.payBtnAmt}>{formatPaise(p.amount)}</Text>
+                  <Text style={ts.payBtnAmt}>{formatPaise(payableAmount)}</Text>
                 </View>
               </View>
             )}
@@ -213,7 +256,13 @@ export default function ChitDetailScreen() {
   const queryClient = useQueryClient();
   const { memberId, memberProfile } = useMemberSession();
   const { data, isLoading } = useChitDetail(id ?? '', memberId);
+  const { data: auctions = [] } = useGroupAuctions(data?.chit_group?.id);
   const [payingId, setPayingId] = useState<string | null>(null);
+  const [paySheetVisible, setPaySheetVisible] = useState(false);
+  const [selectedPayment, setSelectedPayment] = useState<PaymentRow | null>(null);
+  const [selectedPayable, setSelectedPayable] = useState(0);
+  const [payMode, setPayMode] = useState<'full' | 'partial'>('full');
+  const [partialAmount, setPartialAmount] = useState('');
 
   // ── Real-time subscription ───────────────────────────────────
   useEffect(() => {
@@ -232,33 +281,36 @@ export default function ChitDetailScreen() {
   }, [id, memberId, queryClient]);
 
   // ── Razorpay Payment ─────────────────────────────────────────
-  const handlePayment = async (payment: PaymentRow) => {
+  const handlePayment = async (payment: PaymentRow, payableAmount: number, payAmount: number) => {
     if (!memberProfile) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
-    const amountInPaise = payment.amount; // already stored in paise
+    const amountInPaise = payAmount || payableAmount || payment.amount;
     const group = data?.chit_group;
 
     const markPaid = async (paymentId?: string) => {
-      const { error } = await supabase
-        .from('payment_schedules')
-        .update({
-          paid: true,
-          paid_at: new Date().toISOString(),
-        })
-        .eq('id', payment.id);
-      if (error) throw error;
+      const isFullPayment = amountInPaise >= payableAmount;
+      if (isFullPayment) {
+        const { error } = await supabase
+          .from('payment_schedules')
+          .update({
+            paid: true,
+            paid_at: new Date().toISOString(),
+          })
+          .eq('id', payment.id);
+        if (error) throw error;
+      }
 
       await supabase.from('chit_member_transactions').insert([{
         chit_member_id: id,
         amount: amountInPaise,
         payment_type: 'installment',
         status: 'completed',
-        notes: `Month ${payment.month_number}${paymentId ? ` – Razorpay: ${paymentId}` : ''}`,
+        notes: `Month ${payment.month_number}${paymentId ? ` - Razorpay: ${paymentId}` : ''}`,
       }]); // non-critical, ignore any insert errors
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('✅ Payment Successful!', `Month ${payment.month_number} installment of ${formatPaise(payment.amount)} paid.`);
+      Alert.alert('Payment Successful!', `Month ${payment.month_number} payment of ${formatPaise(amountInPaise)} recorded.`);
       queryClient.invalidateQueries({ queryKey: ['chit-detail', id, memberId] });
       queryClient.invalidateQueries({ queryKey: ['active-chits', memberId] });
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats', memberId] });
@@ -269,16 +321,34 @@ export default function ChitDetailScreen() {
       // Try native Razorpay first, only if the native module is actually linked
       let RazorpayCheckout: any = null;
       if (require('react-native').NativeModules.RNRazorpayCheckout) {
-        try { 
-          RazorpayCheckout = require('react-native-razorpay').default; 
+        try {
+          RazorpayCheckout = require('react-native-razorpay').default;
         } catch (e) { console.log('Razorpay require failed:', e); }
       }
 
       if (RazorpayCheckout && RazorpayCheckout.open) {
+        let orderId: string | undefined;
+        let keyId = RAZORPAY_KEY;
+
+        try {
+          const order = await apiPost<{ id: string; keyId: string }>('/api/payments/razorpay/order', {
+            amount: amountInPaise,
+            receipt: `chit-${id}-${payment.month_number}`,
+            notes: { membershipId: id, month: payment.month_number },
+          });
+          orderId = order.id;
+          keyId = order.keyId || keyId;
+        } catch (orderErr: any) {
+          Alert.alert('Payment Error', orderErr?.message || 'Failed to create payment order.');
+          setPayingId(null);
+          return;
+        }
+
         const options = {
-          description: `VSYK Chits – ${group?.name ?? 'Chit'} – Month ${payment.month_number}`,
+          description: `VSYK Chits - ${group?.name ?? 'Chit'} - Month ${payment.month_number}`,
           currency: 'INR',
-          key: RAZORPAY_KEY,
+          key: keyId,
+          order_id: orderId,
           amount: amountInPaise,
           name: 'VSYK Chit Funds',
           prefill: {
@@ -289,12 +359,24 @@ export default function ChitDetailScreen() {
           theme: { color: '#0B1C30' },
         };
         const paymentData = await RazorpayCheckout.open(options);
+        if (paymentData?.razorpay_order_id && paymentData?.razorpay_payment_id && paymentData?.razorpay_signature) {
+          const verify = await apiPost<{ verified: boolean }>('/api/payments/razorpay/verify', {
+            orderId: paymentData.razorpay_order_id,
+            paymentId: paymentData.razorpay_payment_id,
+            signature: paymentData.razorpay_signature,
+          });
+          if (!verify.verified) {
+            Alert.alert('Payment Verification Failed', 'Please try again.');
+            setPayingId(null);
+            return;
+          }
+        }
         await markPaid(paymentData?.razorpay_payment_id);
       } else {
         // Expo Go fallback — simulate with confirmation
         Alert.alert(
           'Confirm Payment',
-          `Pay ${formatPaise(payment.amount)} for Month ${payment.month_number}?\n\n(Test Mode – No actual charge)`,
+          `Pay ${formatPaise(amountInPaise)} for Month ${payment.month_number}?\n\n(Test Mode - No actual charge)`,
           [
             { text: 'Cancel', style: 'cancel', onPress: () => setPayingId(null) },
             {
@@ -320,6 +402,32 @@ export default function ChitDetailScreen() {
     } finally {
       setPayingId(null);
     }
+  };
+
+  const openPaySheet = (payment: PaymentRow, payableAmount: number) => {
+    setSelectedPayment(payment);
+    setSelectedPayable(payableAmount);
+    setPayMode('full');
+    setPartialAmount('');
+    setPaySheetVisible(true);
+  };
+
+  const submitPay = async () => {
+    if (!selectedPayment) return;
+    const payableAmount = selectedPayable || selectedPayment.amount;
+    let payAmount = payableAmount;
+
+    if (payMode === 'partial') {
+      const parsed = Number(partialAmount);
+      if (!parsed || parsed <= 0) {
+        Alert.alert('Invalid amount', 'Enter a valid partial amount.');
+        return;
+      }
+      payAmount = Math.min(parsed * 100, payableAmount);
+    }
+
+    setPaySheetVisible(false);
+    await handlePayment(selectedPayment, payableAmount, payAmount);
   };
 
   if (isLoading) {
@@ -354,8 +462,21 @@ export default function ChitDetailScreen() {
 
   // First unpaid payment that is currently due
   const firstUnpaid = payments.find(p => !p.paid);
+  const settlementByMonth = new Map<number, AuctionSettlement>();
+  auctions.forEach(a => {
+    if (a.auction_number) settlementByMonth.set(a.auction_number, a);
+  });
+
+  const getPayable = (p: PaymentRow) => {
+    const settlement = settlementByMonth.get(p.month_number);
+    if (!settlement) return 0;
+    if (settlement.final_due_amount && settlement.final_due_amount > 0) return settlement.final_due_amount;
+    if (settlement.installment_due && settlement.installment_due > 0) return settlement.installment_due;
+    return 0;
+  };
+
   const totalPaid = payments.filter(p => p.paid).reduce((sum, p) => sum + p.amount, 0);
-  const totalDue = payments.filter(p => !p.paid).reduce((sum, p) => sum + p.amount, 0);
+  const totalDue = payments.filter(p => !p.paid).reduce((sum, p) => sum + getPayable(p), 0);
   const paidCount = payments.filter(p => p.paid).length;
 
   const isCurrentDue = (p: PaymentRow) =>
@@ -436,22 +557,85 @@ export default function ChitDetailScreen() {
               No payment schedule found.
             </Text>
           ) : (
-            payments.map((p, idx) => (
-              <View key={p.id}>
-                <MonthTimelineItem
-                  p={p}
-                  isCurrentDue={isCurrentDue(p)}
-                  onPay={handlePayment}
-                  paying={payingId === p.id}
-                />
-                {idx < payments.length - 1 && <View style={ts.connector} />}
-              </View>
-            ))
+            payments.map((p, idx) => {
+              const auction = settlementByMonth.get(p.month_number);
+              const startDate = auction?.scheduled_at ? new Date(auction.scheduled_at) : null;
+              return (
+                <View key={p.id}>
+                  <MonthTimelineItem
+                    p={p}
+                    isCurrentDue={isCurrentDue(p)}
+                    onPay={openPaySheet}
+                    paying={payingId === p.id}
+                    payableAmount={getPayable(p)}
+                    startDate={startDate}
+                  />
+                  {idx < payments.length - 1 && <View style={ts.connector} />}
+                </View>
+              );
+            })
           )}
         </View>
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      <Modal visible={paySheetVisible} transparent animationType="fade" onRequestClose={() => setPaySheetVisible(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
+          style={s.payOverlay}
+        >
+          <ScrollView
+            contentContainerStyle={{ justifyContent: 'flex-end', flexGrow: 1 }}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={s.paySheet}>
+              <Text style={s.payTitle}>Pay Installment</Text>
+              <Text style={s.paySub}>
+                Month {selectedPayment?.month_number ?? '-'} · Due {formatPaise(selectedPayable || 0)}
+              </Text>
+
+              <View style={s.payModeRow}>
+                <TouchableOpacity
+                  style={[s.payModeBtn, payMode === 'full' && s.payModeBtnActive]}
+                  onPress={() => setPayMode('full')}
+                >
+                  <Text style={s.payModeText}>Pay Full</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.payModeBtn, payMode === 'partial' && s.payModeBtnActive]}
+                  onPress={() => setPayMode('partial')}
+                >
+                  <Text style={s.payModeText}>Pay Partial</Text>
+                </TouchableOpacity>
+              </View>
+
+              {payMode === 'partial' && (
+                <View style={{ gap: 8 }}>
+                  <TextInput
+                    style={s.payInput}
+                    placeholder="Enter amount"
+                    keyboardType="number-pad"
+                    value={partialAmount}
+                    onChangeText={setPartialAmount}
+                  />
+                  <Text style={s.payHint}>Max {formatPaise(selectedPayable || 0)}</Text>
+                </View>
+              )}
+
+              <View style={s.payActions}>
+                <TouchableOpacity style={s.payCancelBtn} onPress={() => setPaySheetVisible(false)}>
+                  <Text style={s.payCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={s.payConfirmBtn} onPress={submitPay}>
+                  <Text style={s.payConfirmText}>Pay Now</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -500,6 +684,7 @@ const ts = StyleSheet.create({
     shadowOpacity: 0.3, shadowRadius: 10, elevation: 6,
   },
   payBtnOverdue: { backgroundColor: '#EF4444', shadowColor: '#EF4444' },
+  payBtnDisabled: { backgroundColor: '#CBD5E1', shadowColor: '#CBD5E1' },
   payBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#FFF', letterSpacing: 1 },
   payBtnAmtBadge: {
     backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 10, paddingVertical: 3, borderRadius: 20,
@@ -559,4 +744,54 @@ const s = StyleSheet.create({
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sectionTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30' },
   sectionSub: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#94A3B8' },
+  payOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.45)', justifyContent: 'flex-end' },
+  paySheet: {
+    backgroundColor: '#FFFFFF',
+    padding: 20,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    gap: 16,
+  },
+  payTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30' },
+  paySub: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B' },
+  payModeRow: { flexDirection: 'row', gap: 12 },
+  payModeBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+  },
+  payModeBtnActive: { backgroundColor: '#E0F2FE', borderColor: '#38BDF8' },
+  payModeText: { fontFamily: 'Inter_600SemiBold', fontSize: 13, color: '#0B1C30' },
+  payInput: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontFamily: 'Inter_500Medium',
+    fontSize: 14,
+    color: '#0B1C30',
+  },
+  payHint: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#94A3B8' },
+  payActions: { flexDirection: 'row', gap: 12, marginTop: 4 },
+  payCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+  },
+  payConfirmBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+  },
+  payCancelText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B' },
+  payConfirmText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 0.5 },
 });

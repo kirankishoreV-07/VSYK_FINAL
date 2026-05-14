@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
+import { registerForPushNotificationsAsync } from './notifications';
 
 const SESSION_KEY = 'vsyk_member_id';
 
@@ -80,6 +81,9 @@ export function MemberSessionProvider({ children }: { children: React.ReactNode 
 
   useEffect(() => {
     if (!memberId) return;
+    registerForPushNotificationsAsync(memberId).catch((err) => {
+      console.warn('Push registration failed:', err);
+    });
     const channel = supabase
       .channel('member-profile-updates')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'customers', filter: `id=eq.${memberId}` }, () => {

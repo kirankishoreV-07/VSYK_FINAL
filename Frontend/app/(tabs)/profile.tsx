@@ -417,7 +417,7 @@ export default function ProfileScreen() {
             </TouchableOpacity>
           )}
 
-          <Text style={s.version}>VSYK Chit Funds · App v4.2.0</Text>
+          <Text style={s.version}>VSYK CHITS · App v4.2.0</Text>
           <View style={{ height: 100 }} />
         </ScrollView>
       </KeyboardAvoidingView>

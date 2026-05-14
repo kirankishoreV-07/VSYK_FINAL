@@ -194,11 +194,12 @@ export default function AdminDashboard() {
         <View style={styles.appBarLeft}>
           <View style={styles.avatarContainer}>
             <Image
-              source={{ uri: 'https://lh3.googleusercontent.com/aida-public/AB6AXuA3srOZezt7unaryShZPYC9qZFJXeb_dEEE3_bBz11fGPJiUPFjlyyJU_EI4_4BdnKliW-iYsROZHcJY8b30tSrOOUv-58aSwgiowMeVpHwMY8qiionwiVFYwg6VPEGRsxPv8z7gKIfOvr3lzFmldC4ftE8hJ91UGI0HaCMGVBkbd_6_YQxZQDIYQC-A1OsPS76BAI9wtZ0oSC8DVUE2REo8rnGOR_HVE--4QodRTHLTOpOrNkvu1oq-mUvcmp5qBzY8voj6J8_84I' }}
+              source={require('../../assets/cropped_logo.png')}
               style={styles.avatar}
+              contentFit="contain"
             />
           </View>
-          <Text style={styles.appBarTitle}>VSYK Admin</Text>
+          <Text style={styles.appBarTitle}>VSYK CHITS</Text>
         </View>
         <TouchableOpacity style={styles.iconButton} onPress={() => Haptics.selectionAsync()}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
@@ -421,12 +422,10 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   avatarContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    borderWidth: 2,
-    borderColor: '#005E7D',
-    overflow: 'hidden',
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   avatar: {
     width: '100%',

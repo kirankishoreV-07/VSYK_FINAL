@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
+import { apiPost } from '../../../lib/api';
 
 export default function AdminLiveAuction() {
   const router = useRouter();
@@ -17,22 +19,34 @@ export default function AdminLiveAuction() {
 
   const fetchLiveAuction = async () => {
     try {
-      // Get the most recent live or upcoming auction
-      const { data: auctionData, error } = await supabase
+      const { data: liveAuction, error: liveError } = await supabase
         .from('auctions')
         .select('*, chit_groups(name, group_code, value, capacity)')
-        .in('status', ['live', 'upcoming'])
+        .eq('status', 'live')
         .order('scheduled_at', { ascending: true })
         .limit(1)
         .single();
 
-      if (error && error.code !== 'PGRST116') throw error;
-      setAuction(auctionData || null);
+      if (liveError && liveError.code !== 'PGRST116') throw liveError;
 
-      if (auctionData?.id) {
-        fetchBids(auctionData.id);
-        startTimer(auctionData.scheduled_at, auctionData.time_limit_mins);
+      if (liveAuction?.id) {
+        setAuction(liveAuction);
+        fetchBids(liveAuction.id);
+        startTimer(liveAuction.scheduled_at, liveAuction.time_limit_mins, liveAuction.closes_at);
+        return;
       }
+
+      // Fallback: check for next upcoming if no live
+      const { data: upcomingAuction, error: upcomingError } = await supabase
+        .from('auctions')
+        .select('*, chit_groups(name, group_code, value, capacity)')
+        .eq('status', 'upcoming')
+        .order('scheduled_at', { ascending: true })
+        .limit(1)
+        .single();
+
+      if (upcomingError && upcomingError.code !== 'PGRST116') throw upcomingError;
+      setAuction(upcomingAuction || null);
     } catch (err) {
       console.error('Error fetching live auction:', err);
     } finally {
@@ -44,20 +58,20 @@ export default function AdminLiveAuction() {
     try {
       const { data } = await supabase
         .from('auction_bids')
-        .select('*')
+        .select('*, customers(full_name)')
         .eq('auction_id', auctionId)
-        .order('bid_amount', { ascending: false })
-        .limit(20);
+        .order('bid_amount', { ascending: true }); 
       setBids(data || []);
     } catch (err) {
       console.error('Error fetching bids:', err);
     }
   };
 
-  const startTimer = (scheduledAt: string, limitMins: number = 60) => {
+  const startTimer = (scheduledAt: string, limitMins: number = 60, closesAt?: string | null) => {
     if (timerRef.current) clearInterval(timerRef.current);
-
-    const endTime = new Date(scheduledAt).getTime() + (limitMins * 60 * 1000);
+    const endTime = closesAt 
+      ? new Date(closesAt).getTime() 
+      : new Date(scheduledAt).getTime() + (limitMins * 60 * 1000);
 
     timerRef.current = setInterval(() => {
       const remaining = endTime - Date.now();
@@ -75,33 +89,23 @@ export default function AdminLiveAuction() {
   useEffect(() => {
     fetchLiveAuction();
 
-    // Supabase Realtime subscription for live bids
-    let bidsChannel: any;
-    let auctionChannel: any;
-    if (auction?.id) {
-      bidsChannel = supabase
-        .channel('live_bids')
-        .on('postgres_changes', {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'auction_bids',
-          filter: `auction_id=eq.${auction.id}`,
-        }, (payload) => {
-          setBids(prev => [payload.new, ...prev]);
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        })
-        .subscribe();
-    }
+    const bidsChannel = supabase
+      .channel('live_bids')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'auction_bids' }, (payload) => {
+        if (auction?.id) fetchBids(auction.id);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      })
+      .subscribe();
 
-    auctionChannel = supabase
-      .channel('admin-live-auction-updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'auctions' }, fetchLiveAuction)
+    const auctionChannel = supabase
+      .channel('auction_status')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'auctions' }, fetchLiveAuction)
       .subscribe();
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      if (bidsChannel) supabase.removeChannel(bidsChannel);
-      if (auctionChannel) supabase.removeChannel(auctionChannel);
+      supabase.removeChannel(bidsChannel);
+      supabase.removeChannel(auctionChannel);
     };
   }, [auction?.id]);
 
@@ -111,14 +115,16 @@ export default function AdminLiveAuction() {
       return;
     }
 
-    const topBid = bids[0];
+    const topBid = bids[0]; 
+    const bidderName = topBid?.customers?.full_name || 'Member';
+    
     Alert.alert(
       'Declare Winner',
-      `Declare ${topBid.bidder_name || 'Top Bidder'} as winner with a bid of ₹${((topBid.bid_amount || 0) / 100).toLocaleString('en-IN')}?`,
+      `Confirm ${bidderName} as winner with a discount of ₹${(topBid.bid_amount / 100).toLocaleString()}?`,
       [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Declare Winner',
+        { 
+          text: 'Confirm & Settle', 
           onPress: async () => {
             setDeclaring(true);
             try {
@@ -128,314 +134,275 @@ export default function AdminLiveAuction() {
                   status: 'completed',
                   winner_user_id: topBid.user_id,
                   current_bid: topBid.bid_amount,
-                  ended_at: new Date().toISOString(),
+                  ended_at: new Date().toISOString()
                 })
                 .eq('id', auction.id);
-
+              
               if (error) throw error;
-
-              await supabase.from('auction_events').insert([{
-                auction_id: auction.id,
-                event_type: 'winner_declared',
-                performed_by: 'Admin',
-                notes: `Winner declared: Bid ₹${((topBid.bid_amount || 0) / 100).toLocaleString('en-IN')}`,
-              }]);
-
+              
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              fetchLiveAuction();
+              router.push(`/(admin)/groups/${auction.chit_group_id}`);
             } catch (err) {
               console.error(err);
-              Alert.alert('Error', 'Failed to declare winner.');
+              Alert.alert('Error', 'Failed to settle auction.');
             } finally {
               setDeclaring(false);
             }
-          },
-        },
+          }
+        }
       ]
     );
   };
 
-  const handlePauseAuction = async () => {
+  const handleCloseAuction = async () => {
     if (!auction) return;
-    const newStatus = auction.status === 'live' ? 'upcoming' : 'live';
-
-    try {
-      await supabase.from('auctions').update({ status: newStatus }).eq('id', auction.id);
-      await supabase.from('auction_events').insert([{
-        auction_id: auction.id,
-        event_type: newStatus === 'live' ? 'resumed' : 'paused',
-        performed_by: 'Admin',
-      }]);
-      Haptics.selectionAsync();
-      fetchLiveAuction();
-    } catch (err) {
-      console.error(err);
-    }
+    Alert.alert('End Bidding', 'Stop all incoming bids for this session?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'End Now', style: 'destructive', onPress: async () => {
+        await supabase.from('auctions').update({ status: 'completed', ended_at: new Date().toISOString() }).eq('id', auction.id);
+        fetchLiveAuction();
+      }}
+    ]);
   };
 
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <ActivityIndicator color="#10D7CD" size="large" style={{ flex: 1 }} />
+      </SafeAreaView>
+    );
+  }
+
   const topBid = bids[0];
-  const prizePool = Number(auction?.chit_groups?.value || 0) / 100;
-  const foregoneAmount = Number(topBid?.bid_amount || 0) / 100;
-  const foremanCommission = prizePool * 0.05;
-  const netDividend = foregoneAmount - foremanCommission;
-  const membersCount = auction?.chit_groups?.capacity || 50;
-  const dividendPerMember = membersCount > 0 ? netDividend / membersCount : 0;
+  const groupValue = (auction?.chit_groups?.value || 0) / 100;
+  const currentDiscount = (topBid?.bid_amount || 0) / 100;
+  const foremanCommission = groupValue * 0.05;
+  const netDividend = currentDiscount - foremanCommission;
+  const dividendPerMember = netDividend / (auction?.chit_groups?.capacity || 1);
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Dark App Bar */}
-      <View style={styles.appBar}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
+      {/* Dynamic Header */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Svg width={24} height={24} viewBox="0 0 24 24" fill="#FFFFFF">
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
         </TouchableOpacity>
-        <View style={styles.headerTitleBox}>
-          <Text style={styles.appBarTitle} numberOfLines={1}>
-            {loading ? 'Loading...' : auction?.chit_groups?.name || 'No Active Auction'}
-          </Text>
-          <Text style={styles.appBarSubtitle}>
-            {auction ? `Auction #${auction.auction_number || '—'} • Ends in ${timeLeft}` : 'No live or upcoming auction'}
-          </Text>
+        <View style={styles.avatarContainer}>
+          <Image
+            source={require('../../../assets/cropped_logo.png')}
+            style={styles.avatar}
+            contentFit="contain"
+          />
         </View>
-        <View style={[styles.liveBadge, { backgroundColor: auction?.status === 'live' ? 'rgba(239,68,68,0.2)' : 'rgba(100,116,139,0.2)' }]}>
-          <View style={[styles.liveIndicator, { backgroundColor: auction?.status === 'live' ? '#EF4444' : '#64748B' }]} />
-          <Text style={[styles.liveText, { color: auction?.status === 'live' ? '#EF4444' : '#64748B' }]}>
-            {auction?.status === 'live' ? 'LIVE' : (auction?.status || 'NONE').toUpperCase()}
-          </Text>
+        <View style={styles.headerInfo}>
+          <Text style={styles.groupName}>{auction?.chit_groups?.name || 'Live Auction'}</Text>
+          <Text style={styles.groupCode}>{auction?.chit_groups?.group_code} • Auction #{auction?.auction_number}</Text>
+        </View>
+        <View style={styles.statusBox}>
+          <View style={styles.pulseIndicator} />
+          <Text style={styles.statusText}>LIVE</Text>
         </View>
       </View>
 
-      {loading ? (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-          <ActivityIndicator color="#10D7CD" size="large" />
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        {/* Main Bidding Panel */}
+        <View style={styles.biddingCard}>
+          <View style={styles.timerRow}>
+            <View style={styles.timerBadge}>
+              <Text style={styles.timerLabel}>REMAINING TIME</Text>
+              <Text style={styles.timerVal}>{timeLeft}</Text>
+            </View>
+            <View style={styles.bidCountBadge}>
+              <Text style={styles.bidCountVal}>{bids.length}</Text>
+              <Text style={styles.bidCountLabel}>BIDS</Text>
+            </View>
+          </View>
+
+          <Text style={styles.lowestBidLabel}>CURRENT LOWEST PRIZE (HIGHEST DISCOUNT)</Text>
+          <Text style={styles.lowestBidVal}>₹{(groupValue - currentDiscount).toLocaleString()}</Text>
+          
+          <View style={styles.statsGrid}>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Discount</Text>
+              <Text style={styles.statVal}>₹{currentDiscount.toLocaleString()}</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Dividend/Member</Text>
+              <Text style={[styles.statVal, { color: '#10B981' }]}>₹{dividendPerMember.toLocaleString()}</Text>
+            </View>
+          </View>
+
+          {topBid && (
+            <View style={styles.leaderBox}>
+              <View style={styles.leaderAvatar}>
+                <Text style={styles.leaderAvatarText}>{topBid.customers?.full_name?.charAt(0)}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.leaderLabel}>CURRENT WINNER</Text>
+                <Text style={styles.leaderName}>{topBid.customers?.full_name}</Text>
+              </View>
+              <View style={styles.rankBadge}>
+                <Text style={styles.rankText}>#1</Text>
+              </View>
+            </View>
+          )}
         </View>
-      ) : !auction ? (
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 32 }}>
-          <Text style={{ color: '#94A3B8', fontFamily: 'Inter_400Regular', fontSize: 16, textAlign: 'center' }}>
-            No live or upcoming auction found.{'\n'}Initialize a Chit Group to schedule auctions.
-          </Text>
-          <TouchableOpacity
-            style={{ marginTop: 24, backgroundColor: '#005E7D', padding: 16, borderRadius: 12 }}
-            onPress={() => router.push('/(admin)/groups')}
+
+        {/* Control Center */}
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Control Center</Text>
+          <Text style={styles.sectionSub}>Manage the auction floor live.</Text>
+        </View>
+
+        <View style={styles.controlsRow}>
+          <TouchableOpacity 
+            style={[styles.controlBtn, styles.btnSettle, bids.length === 0 && styles.btnDisabled]} 
+            onPress={handleDeclareWinner}
+            disabled={bids.length === 0 || declaring}
           >
-            <Text style={{ color: '#FFFFFF', fontFamily: 'Inter_600SemiBold', fontSize: 14 }}>Go to Chit Groups</Text>
+            {declaring ? <ActivityIndicator color="#FFF" /> : <Text style={styles.btnText}>DECLARE WINNER</Text>}
+          </TouchableOpacity>
+          
+          <TouchableOpacity style={[styles.controlBtn, styles.btnStop]} onPress={handleCloseAuction}>
+            <Text style={styles.btnText}>STOP BIDDING</Text>
           </TouchableOpacity>
         </View>
-      ) : (
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
-          {/* Hero: Highest Bid */}
-          <View style={styles.heroCard}>
-            <View style={styles.heroTop}>
-              <Text style={styles.heroLabel}>CURRENT HIGHEST BID (FOREGO AMOUNT)</Text>
-              <View style={styles.timerBadge}>
-                <Svg width={14} height={14} viewBox="0 0 24 24" fill="#FCA5A5">
-                  <Path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z" />
-                </Svg>
-                <Text style={styles.timerText}>{timeLeft}</Text>
-              </View>
-            </View>
-
-            <Text style={styles.heroValue}>
-              {topBid ? `₹${foregoneAmount.toLocaleString('en-IN')}` : '₹ — Awaiting Bids'}
-            </Text>
-
-            {topBid && (
-              <View style={styles.bidderRow}>
-                <View style={styles.bidderInfo}>
-                  <View style={styles.avatarMini}>
-                    <Text style={styles.avatarMiniText}>
-                      {(topBid.bidder_name || 'U').substring(0, 1).toUpperCase()}
-                    </Text>
-                  </View>
-                  <View>
-                    <Text style={styles.bidderLabel}>PLACED BY</Text>
-                    <Text style={styles.bidderName}>{topBid.bidder_name || `User #${topBid.user_id?.substring(0, 8)}`}</Text>
-                  </View>
-                </View>
-              </View>
-            )}
-
-            {topBid && (
-              <View style={styles.netInfoBox}>
-                <Text style={styles.netLabel}>Est. Net Amount to Winner</Text>
-                <Text style={styles.netVal}>
-                  ₹{(prizePool - foregoneAmount).toLocaleString('en-IN')}
-                </Text>
-              </View>
-            )}
-
-            {/* Dividend Breakdown */}
-            {topBid && (
-              <View style={styles.breakdownBox}>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Total Forego Amount</Text>
-                  <Text style={styles.breakdownVal}>₹{foregoneAmount.toLocaleString('en-IN')}</Text>
-                </View>
-                <View style={styles.breakdownRow}>
-                  <Text style={styles.breakdownLabel}>Foreman Commission (5%)</Text>
-                  <Text style={[styles.breakdownVal, { color: '#FCA5A5' }]}>- ₹{foremanCommission.toLocaleString('en-IN')}</Text>
-                </View>
-                <View style={[styles.breakdownRow, { borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.15)', paddingTop: 8, marginTop: 4 }]}>
-                  <Text style={[styles.breakdownLabel, { color: '#FFFFFF', fontFamily: 'Inter_700Bold' }]}>Net Distributable Dividend</Text>
-                  <Text style={[styles.breakdownVal, { color: '#54FAEF', fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18 }]}>₹{netDividend.toLocaleString('en-IN')}</Text>
-                </View>
-                <View style={styles.perMemberRow}>
-                  <View>
-                    <Text style={styles.perMemberLabel}>DIVIDEND PER MEMBER</Text>
-                    <Text style={styles.perMemberVal}>₹{dividendPerMember.toLocaleString('en-IN')}</Text>
-                  </View>
-                  <TouchableOpacity style={styles.executeBtn} onPress={() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy)}>
-                    <Text style={styles.executeBtnText}>EXECUTE DISTRIBUTION</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
+        {/* Live Bidding Feed */}
+        <View style={styles.feedHeader}>
+          <Text style={styles.sectionTitle}>Real-time Feed</Text>
+          <View style={styles.feedBadge}>
+            <View style={styles.liveDot} />
+            <Text style={styles.feedBadgeText}>UPDATED JUST NOW</Text>
           </View>
+        </View>
 
-          {/* Foreman Controls */}
-          <View style={styles.controlsSection}>
-            <Text style={styles.sectionTitle}>Foreman Controls</Text>
-            <View style={styles.controlRow}>
-              <TouchableOpacity
-                style={[styles.controlBtn, styles.controlBtnSuccess, (declaring || bids.length === 0) && styles.controlBtnDisabled]}
-                onPress={handleDeclareWinner}
-                disabled={declaring || bids.length === 0}
-              >
-                {declaring ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <>
-                    <Svg width={20} height={20} viewBox="0 0 24 24" fill="#FFFFFF">
-                      <Path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z" />
-                    </Svg>
-                    <Text style={styles.controlBtnText}>Declare Winner</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[styles.controlBtn, styles.controlBtnWarning]} onPress={handlePauseAuction}>
-                <Svg width={20} height={20} viewBox="0 0 24 24" fill="#FFFFFF">
-                  <Path d={auction?.status === 'live' ? 'M6 19h4V5H6v14zm8-14v14h4V5h-4z' : 'M8 5v14l11-7z'} />
-                </Svg>
-                <Text style={styles.controlBtnText}>
-                  {auction?.status === 'live' ? 'Pause Auction' : 'Resume Auction'}
-                </Text>
-              </TouchableOpacity>
-            </View>
+        {bids.length === 0 ? (
+          <View style={styles.emptyFeed}>
+            <Text style={styles.emptyFeedText}>Awaiting first bid from members...</Text>
           </View>
-
-          {/* Live Bidding Log */}
-          <View style={styles.logSection}>
-            <View style={styles.logHeader}>
-              <Text style={styles.sectionTitle}>Live Bidding Log</Text>
-              <Text style={styles.logCount}>{bids.length} Bids</Text>
-            </View>
-
-            {bids.length === 0 ? (
-              <Text style={{ color: '#64748B', fontFamily: 'Inter_400Regular', fontStyle: 'italic' }}>
-                No bids placed yet.
-              </Text>
-            ) : (
-              <View style={styles.logList}>
-                {bids.map((bid, i) => (
-                  <View key={bid.id || i} style={styles.logItem}>
-                    <View style={styles.logTimeCol}>
-                      <Text style={styles.logTime}>
-                        {new Date(bid.placed_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                      </Text>
-                    </View>
-                    <View style={styles.logIconCol}>
-                      <View style={[styles.logDot, { backgroundColor: i === 0 ? '#10D7CD' : '#64748B' }]} />
-                      {i < bids.length - 1 && <View style={styles.logLine} />}
-                    </View>
-                    <View style={styles.logContent}>
-                      <Text style={[styles.logAmount, { color: i === 0 ? '#10D7CD' : '#64748B' }]}>
-                        ₹{((bid.bid_amount || 0) / 100).toLocaleString('en-IN')}
-                      </Text>
-                      <Text style={styles.logUser}>
-                        {bid.bidder_name || `User #${bid.user_id?.substring(0, 8)}`}
-                      </Text>
-                    </View>
-                  </View>
-                ))}
+        ) : (
+          <View style={styles.feedList}>
+            {bids.map((bid, i) => (
+              <View key={bid.id} style={[styles.feedItem, i === 0 && styles.feedItemTop]}>
+                <View style={styles.feedTime}>
+                  <Text style={styles.timeText}>{new Date(bid.placed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                </View>
+                <View style={styles.feedLineCol}>
+                  <View style={[styles.feedDot, i === 0 && styles.feedDotActive]} />
+                  {i < bids.length - 1 && <View style={styles.feedLine} />}
+                </View>
+                <View style={styles.feedContent}>
+                  <Text style={styles.feedUser}>{bid.customers?.full_name}</Text>
+                  <Text style={[styles.feedAmount, i === 0 && { color: '#10B981' }]}>
+                    Discount: ₹{(bid.bid_amount / 100).toLocaleString()}
+                  </Text>
+                </View>
+                {i === 0 && <View style={styles.winnerTag}><Text style={styles.winnerTagText}>WINNER</Text></View>}
               </View>
-            )}
+            ))}
           </View>
-
-        </ScrollView>
-      )}
+        )}
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0F172A' },
-  appBar: {
-    flexDirection: 'row', alignItems: 'center',
-    paddingHorizontal: 16, height: 64, backgroundColor: '#0B1221',
-    borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)', zIndex: 40,
+  header: { 
+    flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, height: 70, 
+    backgroundColor: '#1E293B', borderBottomWidth: 1, borderBottomColor: '#334155' 
   },
-  backBtn: { padding: 8, marginRight: 8 },
-  headerTitleBox: { flex: 1 },
-  appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#FFFFFF' },
-  appBarSubtitle: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#94A3B8' },
-  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 100 },
-  liveIndicator: { width: 8, height: 8, borderRadius: 4 },
-  liveText: { fontFamily: 'Inter_700Bold', fontSize: 10, letterSpacing: 1 },
-
-  scrollContent: { padding: 20, paddingBottom: 120 },
-
-  heroCard: {
-    backgroundColor: '#005E7D', borderRadius: 24, padding: 24, marginBottom: 24,
-    shadowColor: '#00D1C1', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.15, shadowRadius: 30, elevation: 10,
+  avatarContainer: {
+    width: 32,
+    height: 32,
+    marginRight: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  heroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  heroLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#A5F3FC', letterSpacing: 0.5 },
-  timerBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: 'rgba(0,0,0,0.3)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 100 },
-  timerText: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 12, color: '#FCA5A5' },
-  heroValue: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 40, color: '#FFFFFF', marginBottom: 24, letterSpacing: -1 },
-  bidderRow: { borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 20, marginBottom: 12 },
-  bidderInfo: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  avatarMini: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#54FAEF', alignItems: 'center', justifyContent: 'center' },
-  avatarMiniText: { fontFamily: 'Inter_700Bold', fontSize: 16, color: '#00201E' },
-  bidderLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#A5F3FC', letterSpacing: 0.5, marginBottom: 2 },
-  bidderName: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#FFFFFF' },
-  netInfoBox: { backgroundColor: 'rgba(0,0,0,0.2)', padding: 12, borderRadius: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  netLabel: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#CBD5E1' },
-  netVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#54FAEF' },
+  avatar: { width: '100%', height: '100%' },
+  backBtn: { padding: 8, marginLeft: -8, marginRight: 4 },
+  headerInfo: { flex: 1 },
+  groupName: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#FFFFFF' },
+  groupCode: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#94A3B8', marginTop: 2 },
+  statusBox: { 
+    flexDirection: 'row', alignItems: 'center', gap: 6, 
+    backgroundColor: 'rgba(239, 68, 68, 0.1)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 100 
+  },
+  pulseIndicator: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' },
+  statusText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#EF4444', letterSpacing: 1 },
 
-  breakdownBox: { backgroundColor: 'rgba(0,0,0,0.25)', borderRadius: 16, padding: 16, gap: 8 },
-  breakdownRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  breakdownLabel: { fontFamily: 'Inter_500Medium', fontSize: 13, color: '#CBD5E1' },
-  breakdownVal: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#FFFFFF' },
-  perMemberRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
-  perMemberLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#A5F3FC', letterSpacing: 0.5, marginBottom: 4 },
-  perMemberVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 28, color: '#FFFFFF' },
-  executeBtn: { backgroundColor: '#10D7CD', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12 },
-  executeBtnText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: '#00201E', letterSpacing: 0.5 },
+  scrollContent: { padding: 20, paddingBottom: 100 },
+  biddingCard: { 
+    backgroundColor: '#1E293B', borderRadius: 28, padding: 24, marginBottom: 32,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.05)',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.2, shadowRadius: 20, elevation: 10
+  },
+  timerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 },
+  timerBadge: { gap: 4 },
+  timerLabel: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#94A3B8', letterSpacing: 0.5 },
+  timerVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24, color: '#EF4444' },
+  bidCountBadge: { alignItems: 'center', backgroundColor: '#334155', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
+  bidCountVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#FFFFFF' },
+  bidCountLabel: { fontFamily: 'Inter_700Bold', fontSize: 8, color: '#94A3B8' },
 
-  controlsSection: { marginBottom: 32 },
-  sectionTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 18, color: '#FFFFFF', marginBottom: 16 },
-  controlRow: { flexDirection: 'row', gap: 16 },
-  controlBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 16, borderRadius: 16 },
-  controlBtnSuccess: { backgroundColor: '#10B981' },
-  controlBtnWarning: { backgroundColor: '#F59E0B' },
-  controlBtnDisabled: { opacity: 0.5 },
-  controlBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#FFFFFF' },
+  lowestBidLabel: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#64748B', letterSpacing: 0.8, textAlign: 'center' },
+  lowestBidVal: { 
+    fontFamily: 'SpaceGrotesk_700Bold', fontSize: 44, color: '#FFFFFF', 
+    textAlign: 'center', marginVertical: 12, letterSpacing: -1 
+  },
+  
+  statsGrid: { flexDirection: 'row', gap: 12, marginTop: 12, marginBottom: 24 },
+  statItem: { flex: 1, backgroundColor: 'rgba(255,255,255,0.03)', padding: 16, borderRadius: 20, alignItems: 'center' },
+  statLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#94A3B8', marginBottom: 4 },
+  statVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#FFFFFF' },
 
-  logSection: { backgroundColor: '#1E293B', borderRadius: 24, padding: 20 },
-  logHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  logCount: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#94A3B8', backgroundColor: '#334155', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 100 },
-  logList: { paddingLeft: 8 },
-  logItem: { flexDirection: 'row', minHeight: 60 },
-  logTimeCol: { width: 65, paddingTop: 4 },
-  logTime: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#64748B' },
-  logIconCol: { width: 30, alignItems: 'center' },
-  logDot: { width: 12, height: 12, borderRadius: 6, borderWidth: 2, borderColor: '#1E293B', marginTop: 4, zIndex: 1 },
-  logLine: { width: 2, flex: 1, backgroundColor: '#334155', marginTop: -8, marginBottom: 4 },
-  logContent: { flex: 1, paddingBottom: 24 },
-  logAmount: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, marginBottom: 2 },
-  logUser: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#94A3B8' },
+  leaderBox: { 
+    flexDirection: 'row', alignItems: 'center', gap: 12, 
+    backgroundColor: 'rgba(16, 185, 129, 0.1)', padding: 16, borderRadius: 20,
+    borderWidth: 1, borderColor: 'rgba(16, 185, 129, 0.2)'
+  },
+  leaderAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#10B981', alignItems: 'center', justifyContent: 'center' },
+  leaderAvatarText: { fontFamily: 'Inter_700Bold', fontSize: 18, color: '#FFFFFF' },
+  leaderLabel: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#10B981', letterSpacing: 0.5 },
+  leaderName: { fontFamily: 'Inter_600SemiBold', fontSize: 15, color: '#FFFFFF' },
+  rankBadge: { backgroundColor: '#10B981', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  rankText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#FFFFFF' },
+
+  sectionHeader: { marginBottom: 16 },
+  sectionTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#FFFFFF' },
+  sectionSub: { fontFamily: 'Inter_500Medium', fontSize: 13, color: '#64748B', marginTop: 4 },
+
+  controlsRow: { flexDirection: 'row', gap: 12, marginBottom: 40 },
+  controlBtn: { flex: 1, height: 60, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  btnSettle: { backgroundColor: '#005E7D' },
+  btnStop: { backgroundColor: '#EF4444' },
+  btnDisabled: { opacity: 0.5 },
+  btnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 1 },
+
+  feedHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  feedBadge: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#10B981' },
+  feedBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#10B981' },
+
+  emptyFeed: { alignItems: 'center', padding: 40, backgroundColor: '#1E293B', borderRadius: 20 },
+  emptyFeedText: { fontFamily: 'Inter_500Medium', fontSize: 14, color: '#64748B' },
+
+  feedList: { paddingLeft: 12 },
+  feedItem: { flexDirection: 'row', minHeight: 70 },
+  feedItemTop: { minHeight: 90 },
+  feedTime: { width: 60, paddingTop: 4 },
+  timeText: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#475569' },
+  feedLineCol: { width: 30, alignItems: 'center' },
+  feedDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#334155', zIndex: 2, borderWidth: 2, borderColor: '#0F172A' },
+  feedDotActive: { backgroundColor: '#10B981', transform: [{ scale: 1.4 }] },
+  feedLine: { width: 2, flex: 1, backgroundColor: '#1E293B', marginTop: -4, marginBottom: -4, zIndex: 1 },
+  feedContent: { flex: 1, paddingLeft: 12, paddingBottom: 24 },
+  feedUser: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#FFFFFF' },
+  feedAmount: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#64748B', marginTop: 2 },
+  winnerTag: { backgroundColor: '#10B981', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, height: 24 },
+  winnerTagText: { fontFamily: 'Inter_700Bold', fontSize: 9, color: '#FFFFFF' },
 });

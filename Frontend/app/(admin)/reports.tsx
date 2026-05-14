@@ -373,7 +373,7 @@ export default function AdminReports() {
                     <Text style={styles.kpiLabelSmall}>Collected</Text>
                     <Text style={styles.kpiValueSmall}>{formatPaise(group.totalCollected)}</Text>
                   </View>
-                  <View>
+                  <View style={{ alignItems: 'flex-end' }}>
                     <Text style={styles.kpiLabelSmall}>Dividends</Text>
                     <Text style={[styles.kpiValueSmall, { color: '#DC2626' }]}>{formatPaise(group.totalDividends)}</Text>
                   </View>
@@ -587,8 +587,13 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    marginBottom: 16,
+    marginBottom: 20,
     overflow: 'hidden',
+    shadowColor: '#01789E',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.05,
+    shadowRadius: 12,
+    elevation: 3,
   },
   groupHeader: {
     padding: 16,
@@ -597,27 +602,30 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 16,
+    marginBottom: 20,
   },
   groupName: {
     fontFamily: 'SpaceGrotesk_700Bold',
-    fontSize: 16,
+    fontSize: 22,
     color: '#0B1C30',
+    letterSpacing: -0.5,
   },
   groupValueText: {
     fontFamily: 'Inter_500Medium',
-    fontSize: 12,
+    fontSize: 13,
     color: '#64748B',
-    marginTop: 2,
+    marginTop: 4,
   },
   statusBadge: {
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 6,
+    marginTop: 4,
   },
   statusText: {
     fontFamily: 'Inter_700Bold',
     fontSize: 10,
+    letterSpacing: 0.5,
   },
   groupKpiRow: {
     flexDirection: 'row',
@@ -632,9 +640,9 @@ const styles = StyleSheet.create({
   },
   kpiValueSmall: {
     fontFamily: 'SpaceGrotesk_700Bold',
-    fontSize: 16,
+    fontSize: 20,
     color: '#0F172A',
-    marginTop: 2,
+    marginTop: 4,
   },
   progressTrack: {
     height: 6,
@@ -642,6 +650,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
     overflow: 'hidden',
     marginBottom: 16,
+    marginTop: 8,
   },
   progressFill: {
     height: '100%',

@@ -1,66 +1,116 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, ScrollView, TouchableOpacity,
-  StyleSheet, Platform, Alert, Animated,
+  View, Text, ScrollView, TouchableOpacity, TextInput,
+  StyleSheet, Alert, Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import Svg, { Path, Circle } from 'react-native-svg';
+import Svg, { Path } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { supabase } from '../../lib/supabase';
 import { Colors, Shadows } from '../../lib/constants';
 import { formatPaise } from '../../lib/hooks/useDashboard';
+import { useMemberSession } from '../../lib/MemberSessionContext';
 
 // ─── Types ────────────────────────────────────────────────────
 type AuctionDetail = {
   id: string;
   chit_group_id: string;
   scheduled_at: string;
+  closes_at: string | null;
   status: string;
   min_bid: number;
+  max_bid: number | null;
   current_bid: number;
   chit_group: { name: string; value: number; duration_months: number } | null;
-};
-
-type BidEntry = {
-  id: string;
-  bid_amount: number;
-  placed_at: string;
-  user_id: string;
-  initials: string;
-  display_name: string;
+  is_joined: boolean;
+  my_bids: { bid_amount: number; placed_at: string }[];
 };
 
 // ─── Hook: Live Upcoming Auctions ─────────────────────────────
-function useUpcomingAuctionsList() {
+function useUpcomingAuctionsList(memberId: string | null) {
   return useQuery<AuctionDetail[]>({
-    queryKey: ['auctions-list'],
+    queryKey: ['auctions-list', memberId],
+    enabled: !!memberId,
     queryFn: async () => {
+      if (!memberId) return [];
+      const { data: memberGroups, error: groupError } = await supabase
+        .from('chit_members')
+        .select('chit_group_id')
+        .eq('customer_id', memberId);
+      if (groupError) throw groupError;
+      const groupIds = (memberGroups || []).map((row: { chit_group_id: string }) => row.chit_group_id);
+      if (groupIds.length === 0) return [];
+
       const { data, error } = await supabase
         .from('auctions')
-        .select('id, chit_group_id, scheduled_at, status, min_bid, current_bid, chit_group:chit_groups(name, value, duration_months)')
+        .select('id, chit_group_id, scheduled_at, closes_at, status, min_bid, max_bid, current_bid, chit_group:chit_groups(name, value, duration_months)')
+        .in('chit_group_id', groupIds)
         .in('status', ['upcoming', 'live'])
         .order('scheduled_at', { ascending: true })
         .limit(10);
       if (error) throw error;
-      return (data ?? []) as unknown as AuctionDetail[];
+      const auctions = (data ?? []) as unknown as AuctionDetail[];
+      if (auctions.length === 0) return [];
+
+      const auctionIds = auctions.map((a) => a.id);
+
+      const { data: joinedRows } = await supabase
+        .from('auction_participants')
+        .select('auction_id')
+        .eq('customer_id', memberId)
+        .in('auction_id', auctionIds);
+
+      const { data: bidRows } = await supabase
+        .from('auction_bids')
+        .select('auction_id, bid_amount, placed_at')
+        .eq('customer_id', memberId)
+        .in('auction_id', auctionIds)
+        .order('placed_at', { ascending: false });
+
+      const joinedSet = new Set((joinedRows || []).map((row: { auction_id: string }) => row.auction_id));
+      const bidsByAuction = (bidRows || []).reduce((acc: Record<string, { bid_amount: number; placed_at: string }[]>, row: any) => {
+        acc[row.auction_id] = acc[row.auction_id] || [];
+        acc[row.auction_id].push({ bid_amount: row.bid_amount, placed_at: row.placed_at });
+        return acc;
+      }, {});
+
+      return auctions.map((auction) => ({
+        ...auction,
+        is_joined: joinedSet.has(auction.id),
+        my_bids: bidsByAuction[auction.id] || [],
+      }));
     },
     refetchInterval: 30000,
+  });
+}
+
+function useJoinAuction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ auctionId, customerId }: { auctionId: string; customerId: string }) => {
+      const { error } = await supabase.from('auction_participants').insert({
+        auction_id: auctionId,
+        customer_id: customerId,
+      });
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['auctions-list'] }),
+    onError: (e: Error) => Alert.alert('Join Error', e.message),
   });
 }
 
 function usePlaceBid() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ auctionId, amount }: { auctionId: string; amount: number }) => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('Not authenticated');
+    mutationFn: async ({ auctionId, amount, customerId, bidderName }: { auctionId: string; amount: number; customerId: string; bidderName?: string }) => {
       const { error } = await supabase.from('auction_bids').insert({
-        auction_id: auctionId, user_id: user.id, bid_amount: amount,
+        auction_id: auctionId,
+        customer_id: customerId,
+        bid_amount: amount,
+        bidder_name: bidderName || null,
       });
       if (error) throw new Error(error.message);
-      // Update current_bid on auction
       await supabase.from('auctions').update({ current_bid: amount }).eq('id', auctionId);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['auctions-list'] }),
@@ -88,18 +138,18 @@ function LiveDot() {
 }
 
 // ─── Countdown ────────────────────────────────────────────────
-function Countdown({ scheduledAt }: { scheduledAt: string }) {
+function Countdown({ targetAt }: { targetAt: string }) {
   const [timeLeft, setTimeLeft] = useState({ mins: 0, secs: 0 });
   useEffect(() => {
     const update = () => {
-      const diff = new Date(scheduledAt).getTime() - Date.now();
+      const diff = new Date(targetAt).getTime() - Date.now();
       if (diff <= 0) { setTimeLeft({ mins: 0, secs: 0 }); return; }
       setTimeLeft({ mins: Math.floor(diff / 60000), secs: Math.floor((diff % 60000) / 1000) });
     };
     update();
     const id = setInterval(update, 1000);
     return () => clearInterval(id);
-  }, [scheduledAt]);
+  }, [targetAt]);
   const pad = (n: number) => String(n).padStart(2, '0');
   return (
     <View style={s.countdownRow}>
@@ -113,20 +163,73 @@ function Countdown({ scheduledAt }: { scheduledAt: string }) {
 
 // ─── Auction Card ─────────────────────────────────────────────
 function AuctionCard({ auction }: { auction: AuctionDetail }) {
+  const { memberId, memberProfile } = useMemberSession();
   const { mutate: placeBid, isPending } = usePlaceBid();
+  const { mutate: joinAuction, isPending: joining } = useJoinAuction();
+  const [bidAmount, setBidAmount] = useState('');
   const group = auction.chit_group;
   const isLive = auction.status === 'live';
-  const currentBid = auction.current_bid;
-  const minBid = auction.min_bid;
-  const nextBid = currentBid > 0 ? currentBid + 500 : minBid;
-  const progress = currentBid > 0 ? Math.min(currentBid / (group?.value ?? 1), 1) : 0;
+  const currentBid = auction.current_bid || 0;
+  const minBid = auction.min_bid || 0;
+  const maxBid = auction.max_bid && auction.max_bid > 0 ? auction.max_bid : null;
+  const lowestBid = currentBid > 0 ? currentBid : null;
+  const progress = lowestBid ? Math.min(lowestBid / (group?.value ?? 1), 1) : 0;
+  const targetAt = isLive && auction.closes_at ? auction.closes_at : auction.scheduled_at;
 
-  const handleBid = (extra: number) => {
+  const handleJoin = () => {
+    if (!memberId) {
+      Alert.alert('Login Required', 'Please log in to join this auction.');
+      return;
+    }
+    joinAuction({ auctionId: auction.id, customerId: memberId });
+  };
+
+  const handleBid = () => {
+    if (!auction.is_joined) {
+      Alert.alert('Join Required', 'Join this auction before placing a bid.');
+      return;
+    }
+    if (!isLive) {
+      Alert.alert('Auction Not Live', 'Bidding opens once the auction is live.');
+      return;
+    }
+    const amountPaise = Math.round(Number(bidAmount) * 100);
+    if (Number.isNaN(amountPaise) || amountPaise <= 0) {
+      Alert.alert('Invalid Amount', 'Enter a valid bid amount.');
+      return;
+    }
+    if (amountPaise < minBid) {
+      Alert.alert('Bid Too Low', `Minimum bid is ${formatPaise(minBid)}.`);
+      return;
+    }
+    if (maxBid && amountPaise > maxBid) {
+      Alert.alert('Bid Too High', `Maximum bid is ${formatPaise(maxBid)}.`);
+      return;
+    }
+    if (lowestBid && amountPaise >= lowestBid) {
+      Alert.alert('Bid Must Be Lower', `Current lowest bid is ${formatPaise(lowestBid)}.`);
+      return;
+    }
+
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-    const amount = (currentBid || minBid) + extra;
-    Alert.alert('Place Bid', `Bid ${formatPaise(amount * 100)} on ${group?.name ?? 'this auction'}?`, [
+    Alert.alert('Place Bid', `Bid ${formatPaise(amountPaise)} on ${group?.name ?? 'this auction'}?`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Confirm', onPress: () => placeBid({ auctionId: auction.id, amount: amount * 100 }) },
+      {
+        text: 'Confirm',
+        onPress: () => {
+          if (!memberId) {
+            Alert.alert('Login Required', 'Please log in to place a bid.');
+            return;
+          }
+          placeBid({
+            auctionId: auction.id,
+            amount: amountPaise,
+            customerId: memberId,
+            bidderName: memberProfile?.full_name || undefined,
+          });
+          setBidAmount('');
+        },
+      },
     ]);
   };
 
@@ -150,12 +253,12 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
       <View style={s.mainCard}>
         <View style={s.bidRow}>
           <View>
-            <Text style={s.bidRowLabel}>TIME REMAINING</Text>
-            <Countdown scheduledAt={auction.scheduled_at} />
+            <Text style={s.bidRowLabel}>{isLive ? 'CLOSES IN' : 'STARTS IN'}</Text>
+            <Countdown targetAt={targetAt} />
           </View>
           <View style={{ alignItems: 'flex-end' }}>
-            <Text style={s.bidRowLabel}>CURRENT BID</Text>
-            <Text style={s.currentBidAmt}>{formatPaise(currentBid * 100)}</Text>
+            <Text style={s.bidRowLabel}>CURRENT LOWEST BID</Text>
+            <Text style={s.currentBidAmt}>{lowestBid ? formatPaise(lowestBid) : '—'}</Text>
           </View>
         </View>
 
@@ -168,78 +271,85 @@ function AuctionCard({ auction }: { auction: AuctionDetail }) {
         <View style={s.statsGrid}>
           <View>
             <Text style={s.statLabel}>MIN BID</Text>
-            <Text style={s.statVal}>{formatPaise(minBid * 100)}</Text>
+            <Text style={s.statVal}>{formatPaise(minBid)}</Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
-            <Text style={s.statLabel}>MAX DIVIDEND</Text>
+            <Text style={s.statLabel}>MAX BID</Text>
             <Text style={[s.statVal, { color: Colors.primary }]}>
-              {formatPaise(Math.round((group?.value ?? 0) * 0.036))}
+              {maxBid ? formatPaise(maxBid) : 'No Max'}
             </Text>
           </View>
         </View>
       </View>
 
-      {/* AI Assistant */}
-      <View style={s.aiCard}>
-        <View style={s.aiCardBg} />
-        <View style={s.aiContent}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Text style={{ fontSize: 16 }}>✨</Text>
-            <Text style={s.aiCardLabel}>BIDDING ASSISTANT</Text>
-          </View>
-          <Text style={s.aiCardTitle}>Bid +₹500 to maintain lead</Text>
-          <Text style={s.aiCardSub}>Winning now secures an extra ₹1,200 in dividend yield based on current trends.</Text>
-          <View style={s.quickBidRow}>
-            {[500, 1000].map(amt => (
-              <TouchableOpacity key={amt} style={s.quickBidBtn}
-                onPress={() => handleBid(amt)} activeOpacity={0.85}>
-                <Text style={s.quickBidTxt}>+ ₹{amt.toLocaleString('en-IN')}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+      {/* Join + Bid */}
+      {!auction.is_joined ? (
+        <TouchableOpacity
+          style={[s.placeBidBtn, { backgroundColor: '#0F766E' }]}
+          onPress={handleJoin}
+          activeOpacity={0.9}
+          disabled={joining}
+        >
+          <Text style={[s.placeBidLeft, { color: '#FFFFFF' }]}>{joining ? 'Joining...' : 'Join Auction'}</Text>
+        </TouchableOpacity>
+      ) : (
+        <View style={s.bidInputCard}>
+          <Text style={s.bidInputLabel}>Your Bid (₹)</Text>
+          <TextInput
+            style={s.bidInput}
+            keyboardType="numeric"
+            placeholder="Enter amount"
+            value={bidAmount}
+            onChangeText={setBidAmount}
+          />
+          <TouchableOpacity
+            style={[s.placeBidBtn, (!isLive || isPending) && { opacity: 0.6 }]}
+            onPress={handleBid}
+            activeOpacity={0.9}
+            disabled={!isLive || isPending}
+          >
+            <Text style={s.placeBidLeft}>{isLive ? 'Place Bid' : 'Waiting to Open'}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={s.placeBidRight}>{lowestBid ? formatPaise(lowestBid) : formatPaise(minBid)}</Text>
+              <Svg width={22} height={22} viewBox="0 0 24 24" fill={Colors.primary}>
+                <Path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z" />
+              </Svg>
+            </View>
+          </TouchableOpacity>
         </View>
-      </View>
+      )}
 
-      {/* Activity Feed */}
+      {/* My Bid History */}
       <View style={s.feedSection}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Text style={s.feedTitle}>Activity Feed</Text>
-          <Text style={s.feedCount}>12 ACTIVE BIDDERS</Text>
+          <Text style={s.feedTitle}>My Bid History</Text>
+          <Text style={s.feedCount}>{auction.my_bids.length} BIDS</Text>
         </View>
-        {[
-          { initials: 'RA', name: 'Rahul A.', time: 'Just now', amt: formatPaise((currentBid || minBid) * 100), opacity: 1 },
-          { initials: 'SK', name: 'Suresh K.', time: '2 mins ago', amt: formatPaise(((currentBid || minBid) - 500) * 100), opacity: 0.75 },
-          { initials: 'MP', name: 'Meera P.', time: '4 mins ago', amt: formatPaise(((currentBid || minBid) - 1000) * 100), opacity: 0.5 },
-        ].map((entry, i) => (
-          <View key={i} style={[s.feedRow, { opacity: entry.opacity }]}>
-            <View style={s.feedAvatar}><Text style={s.feedAvatarTxt}>{entry.initials}</Text></View>
-            <View style={{ flex: 1 }}>
-              <Text style={s.feedName}>{entry.name}</Text>
-              <Text style={s.feedTime}>{entry.time}</Text>
+        {auction.my_bids.length === 0 ? (
+          <Text style={s.emptySub}>No bids placed yet.</Text>
+        ) : (
+          auction.my_bids.map((entry, i) => (
+            <View key={`${entry.placed_at}-${i}`} style={s.feedRow}>
+              <View style={s.feedAvatar}><Text style={s.feedAvatarTxt}>ME</Text></View>
+              <View style={{ flex: 1 }}>
+                <Text style={s.feedName}>{formatPaise(entry.bid_amount)}</Text>
+                <Text style={s.feedTime}>
+                  {new Date(entry.placed_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              </View>
+              <Text style={[s.feedAmt, { color: Colors.primary }]}>Placed</Text>
             </View>
-            <Text style={[s.feedAmt, { color: i === 0 ? Colors.primary : '#94A3B8' }]}>{entry.amt}</Text>
-          </View>
-        ))}
+          ))
+        )}
       </View>
-
-      {/* Place Bid CTA */}
-      <TouchableOpacity style={s.placeBidBtn}
-        onPress={() => handleBid(500)} activeOpacity={0.9}>
-        <Text style={s.placeBidLeft}>Place Bid</Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <Text style={s.placeBidRight}>{formatPaise(nextBid * 100)}</Text>
-          <Svg width={22} height={22} viewBox="0 0 24 24" fill={Colors.primary}>
-            <Path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z" />
-          </Svg>
-        </View>
-      </TouchableOpacity>
     </View>
   );
 }
 
 // ─── Main Screen ─────────────────────────────────────────────
 export default function AuctionsScreen() {
-  const { data: auctions, isLoading } = useUpcomingAuctionsList();
+  const { memberId, isLoading: sessionLoading } = useMemberSession();
+  const { data: auctions, isLoading } = useUpcomingAuctionsList(memberId);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -269,10 +379,16 @@ export default function AuctionsScreen() {
       </View>
 
       <ScrollView contentContainerStyle={s.scroll} showsVerticalScrollIndicator={false}>
-        {isLoading ? (
+        {sessionLoading || isLoading ? (
           <View style={{ alignItems: 'center', paddingVertical: 80 }}>
             <Text style={{ fontSize: 32 }}>⚡</Text>
             <Text style={s.emptyTitle}>Loading auctions…</Text>
+          </View>
+        ) : !memberId ? (
+          <View style={s.emptyContainer}>
+            <Text style={{ fontSize: 40 }}>🔒</Text>
+            <Text style={s.emptyTitle}>Sign in to view auctions</Text>
+            <Text style={s.emptySub}>Please log in to see live and upcoming auctions.</Text>
           </View>
         ) : !auctions || auctions.length === 0 ? (
           <View style={s.emptyContainer}>
@@ -351,6 +467,19 @@ const s = StyleSheet.create({
   placeBidBtn: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: Colors.secondary, borderRadius: 18, paddingHorizontal: 20, height: 60 },
   placeBidLeft: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: Colors.primary },
   placeBidRight: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: Colors.primary },
+  bidInputCard: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 16, gap: 12, borderWidth: 1, borderColor: '#F1F5F9' },
+  bidInputLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B', letterSpacing: 0.4 },
+  bidInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontFamily: 'Inter_400Regular',
+    fontSize: 16,
+    color: '#0B1C30',
+  },
 
   // Empty
   emptyContainer: { alignItems: 'center', paddingVertical: 60, gap: 10 },

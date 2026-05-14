@@ -39,9 +39,9 @@ export default function SplashScreen() {
       }),
     ]).start();
 
-    // Navigate to login after 3 seconds
+    // Navigate to onboarding after 3 seconds
     const timer = setTimeout(() => {
-      router.replace('/(auth)/login');
+      router.replace('/(auth)/onboarding');
     }, 3000);
 
     return () => clearTimeout(timer);
@@ -82,7 +82,7 @@ export default function SplashScreen() {
         </View>
 
         {/* Brand Text */}
-        <Text style={styles.headline}>VSYK Chits</Text>
+        <Text style={styles.headline}>VSYK CHITS</Text>
         <Text style={styles.subheadline}>Your Trusted Financial Partner</Text>
       </Animated.View>
 

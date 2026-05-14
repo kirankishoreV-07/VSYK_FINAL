@@ -1,10 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, RefreshControl } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Modal, TextInput, Alert, ActivityIndicator, RefreshControl, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image } from 'expo-image';
 import Svg, { Path, Circle } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { supabase } from '../../../lib/supabase';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { apiPost } from '../../../lib/api';
 
 export default function AdminGroupDetail() {
   const router = useRouter();
@@ -14,6 +17,7 @@ export default function AdminGroupDetail() {
   const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const isGeneratingRef = React.useRef(false);
 
   // Add Member Modal State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -31,6 +35,55 @@ export default function AdminGroupDetail() {
   const [selectedAuctionId, setSelectedAuctionId] = useState<string>('');
   const [loggingPayment, setLoggingPayment] = useState(false);
 
+  // Auction Settlement Modal State
+  const [showSettlementModal, setShowSettlementModal] = useState(false);
+  const [settlementAuction, setSettlementAuction] = useState<any>(null);
+  const [settlementWinnerId, setSettlementWinnerId] = useState('');
+  const [settlementInstallment, setSettlementInstallment] = useState('');
+  const [settlementDividend, setSettlementDividend] = useState('');
+  const [settlementDiscount, setSettlementDiscount] = useState('');
+  const [settlementFinalDue, setSettlementFinalDue] = useState('');
+  const [settlementPrize, setSettlementPrize] = useState('');
+  const [settlementSavings, setSettlementSavings] = useState('');
+  const [savingSettlement, setSavingSettlement] = useState(false);
+
+  // Create Auction Modal State
+  const [auctionDrafts, setAuctionDrafts] = useState<Record<number, {
+    id?: string | null;
+    status?: string | null;
+    scheduledAt: Date;
+    closesAt: Date;
+    minBid: string;
+    maxBid: string;
+  }>>({});
+  const [savingAuctionMonth, setSavingAuctionMonth] = useState<number | null>(null);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [activeDateTarget, setActiveDateTarget] = useState<'scheduled' | 'closes' | null>(null);
+  const [activeTimeTarget, setActiveTimeTarget] = useState<'scheduled' | 'closes' | null>(null);
+  const [activeDraftMonth, setActiveDraftMonth] = useState<number | null>(null);
+  const [pendingDateValue, setPendingDateValue] = useState(new Date());
+  const [pendingTimeValue, setPendingTimeValue] = useState(new Date());
+  const [currentDateValue, setCurrentDateValue] = useState(new Date());
+  const [currentTimeValue, setCurrentTimeValue] = useState(new Date());
+
+  // New Scheduling Modal State
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [selectedAuctionForSchedule, setSelectedAuctionForSchedule] = useState<any | null>(null);
+  const [prepStep, setPrepStep] = useState(1);
+  const [tempMinBid, setTempMinBid] = useState('');
+  const [tempMaxBid, setTempMaxBid] = useState('');
+  const [tempScheduledAt, setTempScheduledAt] = useState(new Date());
+  const [tempClosesAt, setTempClosesAt] = useState(new Date());
+  const [isValidatingSchedule, setIsValidatingSchedule] = useState(false);
+
+  const capacity = group?.capacity || 50;
+  const totalShares = members.reduce((sum, m) => sum + (Number(m.participation_share) || 1), 0);
+  const memberCount = members.length;
+  const calculatedEmi = ((Number(group?.value) || 0) / (Number(group?.no_of_installments) || Number(group?.duration_months) || 1));
+  const baseEmi = (Number(group?.emi_amount) || Number(group?.monthly_installment) || calculatedEmi) / 100;
+  const displayEmi = participation === 'full' ? baseEmi : baseEmi / 2;
+
   const fetchGroup = async () => {
     try {
       const isUuid = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(String(id));
@@ -47,8 +100,34 @@ export default function AdminGroupDetail() {
       if (data) setGroup(data);
     } catch (err) {
       console.error('Error fetching group:', err);
+    } finally {
+      setLoading(false);
     }
   };
+
+  const commissionRate = 0.05;
+  const shareCount = totalShares > 0 ? totalShares : (memberCount > 0 ? memberCount : capacity);
+  const chitValueRupees = (Number(group?.value || 0) / 100);
+
+  useEffect(() => {
+    const installment = Number(settlementInstallment || baseEmi || 0);
+    const bidAmount = Number(settlementDiscount || 0);
+    const commission = chitValueRupees * commissionRate;
+    const dividendPool = Math.max(bidAmount - commission, 0);
+    const dividendPerShare = shareCount > 0 ? dividendPool / shareCount : 0;
+    const payableInstallment = Math.max(installment - dividendPerShare, 0);
+    const prizeAmount = Math.max(chitValueRupees - bidAmount, 0);
+    const savingsPct = installment > 0 ? (dividendPerShare / installment) * 100 : 0;
+
+    const roundedInstallment = Math.round(baseEmi || 0);
+    if (!settlementInstallment || Number(settlementInstallment) !== roundedInstallment) {
+      setSettlementInstallment(String(roundedInstallment));
+    }
+    setSettlementDividend(String(Math.round(dividendPerShare)));
+    setSettlementFinalDue(String(Math.round(payableInstallment)));
+    setSettlementPrize(String(Math.round(prizeAmount)));
+    setSettlementSavings(savingsPct.toFixed(2));
+  }, [settlementDiscount, chitValueRupees, shareCount, baseEmi, settlementInstallment]);
 
   const fetchMembers = async () => {
     if (!group?.id) return;
@@ -87,6 +166,45 @@ export default function AdminGroupDetail() {
     }
   };
 
+  const ensureAuctionsExist = async (g: any, currentAuctions: any[]) => {
+    if (!g?.id) return;
+    const totalNeeded = g.no_of_installments || g.duration_months || 0;
+    if (totalNeeded <= 0) return;
+
+    const existingNumbers = new Set(currentAuctions.map((a: any) => a.auction_number));
+    const missing = [];
+    for (let i = 1; i <= totalNeeded; i++) {
+      if (!existingNumbers.has(i)) {
+        const scheduled = new Date();
+        scheduled.setMonth(scheduled.getMonth() + i);
+        scheduled.setHours(10, 0, 0, 0);
+        const closes = new Date(scheduled);
+        closes.setHours(11, 0, 0, 0);
+
+        missing.push({
+          chit_group_id: g.id,
+          auction_number: i,
+          status: 'upcoming',
+          prize_pool: g.value || 0,
+          min_bid: 0,
+          max_bid: 0,
+          current_bid: 0,
+          scheduled_at: scheduled.toISOString(),
+          closes_at: closes.toISOString(),
+        });
+      }
+    }
+
+    if (missing.length > 0 && !isGeneratingRef.current) {
+      isGeneratingRef.current = true;
+      console.log(`Pre-generating ${missing.length} missing auctions...`);
+      const { error } = await supabase.from('auctions').insert(missing);
+      isGeneratingRef.current = false;
+      if (error) console.error('Error pre-generating auctions:', error);
+      else fetchAuctions();
+    }
+  };
+
   useEffect(() => { fetchGroup(); }, [id]);
   useEffect(() => {
     if (group?.id) {
@@ -94,6 +212,59 @@ export default function AdminGroupDetail() {
       fetchAuctions();
     }
   }, [group?.id]);
+
+  useEffect(() => {
+    if (group?.id && auctions.length >= 0) {
+      const total = group.no_of_installments || group.duration_months || 0;
+      if (auctions.length < total) {
+        ensureAuctionsExist(group, auctions);
+      }
+    }
+  }, [group, auctions.length]);
+
+  useEffect(() => {
+    if (!group) return;
+    const total = group.no_of_installments || group.duration_months || 0;
+    const byNumber = new Map(auctions.map((a) => [a.auction_number, a]));
+    const nextDrafts: Record<number, {
+      id?: string | null;
+      status?: string | null;
+      scheduledAt: Date;
+      closesAt: Date;
+      minBid: string;
+      maxBid: string;
+    }> = {};
+
+    for (let i = 1; i <= total; i += 1) {
+      const existing = byNumber.get(i);
+      const scheduledAt = existing?.scheduled_at ? new Date(existing.scheduled_at) : new Date();
+      const closesAt = existing?.closes_at ? new Date(existing.closes_at) : new Date(Date.now() + (60 * 60 * 1000));
+      nextDrafts[i] = {
+        id: existing?.id || null,
+        status: existing?.status || null,
+        scheduledAt,
+        closesAt,
+        minBid: existing?.min_bid ? String(Math.round(existing.min_bid / 100)) : '',
+        maxBid: existing?.max_bid ? String(Math.round(existing.max_bid / 100)) : '',
+      };
+    }
+
+    setAuctionDrafts(nextDrafts);
+  }, [group, auctions]);
+
+  const deduplicatedAuctions = React.useMemo(() => {
+    const map = new Map<number, any>();
+    const statusPriority: Record<string, number> = { 'live': 3, 'completed': 2, 'upcoming': 1 };
+    
+    [...auctions].forEach(a => {
+      const existing = map.get(a.auction_number);
+      if (!existing || (statusPriority[a.status] || 0) > (statusPriority[existing.status] || 0)) {
+        map.set(a.auction_number, a);
+      }
+    });
+    
+    return Array.from(map.values()).sort((a, b) => a.auction_number - b.auction_number);
+  }, [auctions]);
 
   useEffect(() => {
     if (!group?.id) return;
@@ -120,6 +291,91 @@ export default function AdminGroupDetail() {
     await fetchAuctions();
     setRefreshing(false);
     setLoading(false);
+  };
+
+  const handleOpenScheduleModal = (auction: any) => {
+    setSelectedAuctionForSchedule(auction);
+    setPrepStep(1);
+    setTempMinBid(String((auction.min_bid || 0) / 100));
+    setTempMaxBid(String((auction.max_bid || group?.value || 0) / 100));
+    setTempScheduledAt(auction.scheduled_at ? new Date(auction.scheduled_at) : new Date());
+    setTempClosesAt(auction.closes_at ? new Date(auction.closes_at) : new Date(Date.now() + 3600000));
+    setShowScheduleModal(true);
+  };
+
+  const handleSaveSchedule = async (setLive = false) => {
+    if (!selectedAuctionForSchedule || !group) return;
+
+    const min = parseFloat(tempMinBid) || 0;
+    const max = parseFloat(tempMaxBid) || 0;
+    const chitValue = (group.value || 0) / 100;
+
+    if (min >= max) {
+      Alert.alert('Validation Error', 'Minimum bid must be less than maximum bid.');
+      return;
+    }
+    if (max > chitValue) {
+      Alert.alert('Validation Error', `Maximum bid cannot exceed chit value (₹${chitValue.toLocaleString()}).`);
+      return;
+    }
+    if (tempClosesAt <= tempScheduledAt) {
+      Alert.alert('Validation Error', 'Close time must be after start time.');
+      return;
+    }
+
+    setIsValidatingSchedule(true);
+    try {
+      const { data: overlaps } = await supabase
+        .from('auctions')
+        .select('id, auction_number')
+        .eq('chit_group_id', group.id)
+        .neq('id', selectedAuctionForSchedule.id)
+        .filter('scheduled_at', 'lte', tempClosesAt.toISOString())
+        .filter('closes_at', 'gte', tempScheduledAt.toISOString());
+
+      if (overlaps && overlaps.length > 0) {
+        Alert.alert('Conflict Detected', `This time slot overlaps with Auction #${overlaps[0].auction_number}.`);
+        setIsValidatingSchedule(false);
+        return;
+      }
+
+      if (setLive) {
+        const { data: liveAuctions } = await supabase
+          .from('auctions')
+          .select('id, auction_number')
+          .eq('chit_group_id', group.id)
+          .eq('status', 'live')
+          .neq('id', selectedAuctionForSchedule.id);
+
+        if (liveAuctions && liveAuctions.length > 0) {
+          Alert.alert('Conflict Detected', `Auction #${liveAuctions[0].auction_number} is already LIVE. Only one auction can be live at a time.`);
+          setIsValidatingSchedule(false);
+          return;
+        }
+      }
+
+      const { error } = await supabase
+        .from('auctions')
+        .update({
+          min_bid: Math.round(min * 100),
+          max_bid: Math.round(max * 100),
+          scheduled_at: tempScheduledAt.toISOString(),
+          closes_at: tempClosesAt.toISOString(),
+          status: setLive ? 'live' : selectedAuctionForSchedule.status
+        })
+        .eq('id', selectedAuctionForSchedule.id);
+
+      if (error) throw error;
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setShowScheduleModal(false);
+      fetchAuctions();
+
+      if (setLive) router.push('/(admin)/auctions/live');
+    } catch (err: any) {
+      Alert.alert('Error', err.message);
+    } finally {
+      setIsValidatingSchedule(false);
+    }
   };
 
   useEffect(() => { onRefresh(); }, []);
@@ -166,33 +422,168 @@ export default function AdminGroupDetail() {
     }
   };
 
-  const handleStartAuction = async () => {
-    if (!group?.id) return;
-    Alert.alert('Start Auction', `Create a new auction for ${group.name}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Start', onPress: async () => {
-          try {
-            const auctionNum = auctions.length + 1;
-            const { error } = await supabase.from('auctions').insert([{
-              chit_group_id: group.id,
-              auction_number: auctionNum,
-              status: 'live',
-              min_bid: 0,
-              current_bid: 0,
-              prize_pool: group.value || 0,
-              time_limit_mins: 60,
-              scheduled_at: new Date().toISOString(),
-            }]);
-            if (error) throw error;
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            router.push('/(admin)/auctions/live');
-          } catch (err: any) {
-            Alert.alert('Error', err.message);
-          }
-        }
+  const updateDraft = (monthNumber: number, updates: Partial<{
+    scheduledAt: Date;
+    closesAt: Date;
+    minBid: string;
+    maxBid: string;
+    status: string | null;
+    id: string | null;
+  }>) => {
+    setAuctionDrafts((prev) => ({
+      ...prev,
+      [monthNumber]: {
+        ...prev[monthNumber],
+        ...updates,
       },
-    ]);
+    }));
+  };
+
+  const openDatePicker = (monthNumber: number, target: 'scheduled' | 'closes', value: Date) => {
+    setActiveDraftMonth(monthNumber);
+    setActiveDateTarget(target);
+    setCurrentDateValue(value);
+    setPendingDateValue(value);
+    setShowDatePicker(true);
+  };
+
+  const openTimePicker = (monthNumber: number, target: 'scheduled' | 'closes', value: Date) => {
+    setActiveDraftMonth(monthNumber);
+    setActiveTimeTarget(target);
+    setCurrentTimeValue(value);
+    setPendingTimeValue(value);
+    setShowTimePicker(true);
+  };
+
+  const openDatePickerForPrep = (target: 'scheduled' | 'closes') => {
+    const value = target === 'scheduled' ? tempScheduledAt : tempClosesAt;
+    setActiveDateTarget(target);
+    setCurrentDateValue(value);
+    setPendingDateValue(value);
+    setShowDatePicker(true);
+  };
+
+  const openTimePickerForPrep = (target: 'scheduled' | 'closes') => {
+    const value = target === 'scheduled' ? tempScheduledAt : tempClosesAt;
+    setActiveTimeTarget(target);
+    setCurrentTimeValue(value);
+    setPendingTimeValue(value);
+    setShowTimePicker(true);
+  };
+
+
+  const applyDateValue = (value: Date) => {
+    if (!activeDateTarget) return;
+    if (activeDateTarget === 'closes') {
+      const updated = new Date(tempClosesAt);
+      updated.setFullYear(value.getFullYear(), value.getMonth(), value.getDate());
+      setTempClosesAt(updated);
+    } else {
+      const updated = new Date(tempScheduledAt);
+      updated.setFullYear(value.getFullYear(), value.getMonth(), value.getDate());
+      setTempScheduledAt(updated);
+    }
+  };
+
+  const applyTimeValue = (value: Date) => {
+    if (!activeTimeTarget) return;
+    if (activeTimeTarget === 'closes') {
+      const updated = new Date(tempClosesAt);
+      updated.setHours(value.getHours(), value.getMinutes(), 0, 0);
+      setTempClosesAt(updated);
+    } else {
+      const updated = new Date(tempScheduledAt);
+      updated.setHours(value.getHours(), value.getMinutes(), 0, 0);
+      setTempScheduledAt(updated);
+    }
+  };
+
+  const handleDateChange = (_event: any, selected?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowDatePicker(false);
+      if (_event?.type === 'dismissed') return;
+      const next = selected || currentDateValue;
+      applyDateValue(next);
+      return;
+    }
+    if (selected) setPendingDateValue(selected);
+  };
+
+  const handleTimeChange = (_event: any, selected?: Date) => {
+    if (Platform.OS === 'android') {
+      setShowTimePicker(false);
+      if (_event?.type === 'dismissed') return;
+      const next = selected || currentTimeValue;
+      applyTimeValue(next);
+      return;
+    }
+    if (selected) setPendingTimeValue(selected);
+  };
+
+  const formatDate = (value: any) => {
+    if (!value) return 'N/A';
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return 'N/A';
+    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  };
+  const formatTime = (value: any) => {
+    if (!value) return 'N/A';
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return 'N/A';
+    return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const formatRupees = (value: number | null | undefined) =>
+    `₹${Math.round(Number(value || 0) / 100).toLocaleString('en-IN')}`;
+
+  const openSettlementModal = (auction: any) => {
+    setSettlementAuction(auction);
+    setSettlementWinnerId(auction?.winner_member_id || '');
+    setSettlementDiscount(String((auction?.discount_amount || 0) / 100 || ''));
+    setShowSettlementModal(true);
+  };
+
+  const handleSaveSettlement = async () => {
+    if (!settlementAuction?.id) return;
+
+    const toPaise = (val: string) => Math.max(0, Math.round(Number(val || 0) * 100));
+
+    setSavingSettlement(true);
+    try {
+      const { error } = await supabase
+        .from('auctions')
+        .update({
+          winner_member_id: settlementWinnerId || null,
+          status: 'completed',
+          installment_due: toPaise(String(baseEmi || 0)),
+          dividend_amount: toPaise(settlementDividend),
+          discount_amount: toPaise(settlementDiscount),
+          final_due_amount: toPaise(settlementFinalDue),
+          winner_prize_amount: toPaise(settlementPrize),
+        })
+        .eq('id', settlementAuction.id);
+
+      if (error) throw error;
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setShowSettlementModal(false);
+      fetchAuctions();
+
+      try {
+        await apiPost('/api/auctions/apply-settlement', {
+          auctionId: settlementAuction.id,
+        });
+        await apiPost('/api/auctions/notify-installments', {
+          auctionId: settlementAuction.id,
+          message: `Installment for Auction #${settlementAuction.auction_number || ''} is due. Please pay now.`,
+        });
+      } catch (notifyErr) {
+        console.warn('Installment notification failed:', notifyErr);
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Failed to save settlement.');
+    } finally {
+      setSavingSettlement(false);
+    }
   };
 
   const handleRemoveMember = (member: any) => {
@@ -278,19 +669,13 @@ export default function AdminGroupDetail() {
   };
 
 
-  const prizePool = Number(group?.value || 0) / 100;
-  const capacity = group?.capacity || 50;
-  const totalShares = members.reduce((sum, m) => sum + (Number(m.participation_share) || 1), 0);
-
   const filteredCustomers = customers.filter(c => {
     const matchesSearch = c.full_name?.toLowerCase().includes(searchQuery.toLowerCase()) || c.phone?.includes(searchQuery);
     const isAlreadyMember = members.some(m => m.customer_id === c.id);
     return matchesSearch && !isAlreadyMember;
   });
 
-  const calculatedEmi = ((Number(group?.value) || 0) / (Number(group?.no_of_installments) || Number(group?.duration_months) || 1));
-  const baseEmi = (Number(group?.emi_amount) || Number(group?.monthly_installment) || calculatedEmi) / 100;
-  const displayEmi = participation === 'full' ? baseEmi : baseEmi / 2;
+  const prizePool = Number(group?.value || 0) / 100;
 
   if (loading && !group) {
     return (
@@ -309,6 +694,13 @@ export default function AdminGroupDetail() {
             <Path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
           </Svg>
         </TouchableOpacity>
+        <View style={styles.avatarContainer}>
+          <Image
+            source={require('../../../assets/cropped_logo.png')}
+            style={styles.avatar}
+            contentFit="contain"
+          />
+        </View>
         <View style={styles.headerTitleBox}>
           <Text style={styles.appBarTitle} numberOfLines={1}>{group?.name || 'Group'}</Text>
           <Text style={styles.appBarSubtitle}>{group?.group_code || id} • {group?.duration_months || 0} Months</Text>
@@ -358,24 +750,23 @@ export default function AdminGroupDetail() {
             <TouchableOpacity style={styles.executeBtn} onPress={() => { setSelectedCustomer(null); setShowAddModal(true); fetchCustomers(); }}>
               <Text style={styles.executeBtnText}>+ ADD MEMBER</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.executeBtn, { backgroundColor: '#10B981' }]} onPress={handleStartAuction}>
-              <Text style={styles.executeBtnText}>START AUCTION</Text>
-            </TouchableOpacity>
           </View>
         </View>
 
-        {/* Collection Health */}
+        {/* Enrollment Status */}
         <View style={styles.healthCard}>
           <View style={styles.healthLeft}>
             <Text style={styles.healthTitle}>Enrollment Status</Text>
             <Text style={styles.healthSub}>{totalShares} of {capacity} shares filled</Text>
-            <View style={styles.healthLegendRow}>
-              <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
-              <Text style={styles.legendText}>Enrolled ({totalShares})</Text>
-            </View>
-            <View style={styles.healthLegendRow}>
-              <View style={[styles.legendDot, { backgroundColor: '#F59E0B' }]} />
-              <Text style={styles.legendText}>Available ({capacity - totalShares})</Text>
+            <View style={{ marginTop: 12 }}>
+              <View style={styles.healthLegendRow}>
+                <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
+                <Text style={styles.legendText}>Enrolled ({totalShares})</Text>
+              </View>
+              <View style={styles.healthLegendRow}>
+                <View style={[styles.legendDot, { backgroundColor: '#F59E0B' }]} />
+                <Text style={styles.legendText}>Available ({capacity - totalShares})</Text>
+              </View>
             </View>
           </View>
           <View style={styles.progressCircle}>
@@ -388,6 +779,95 @@ export default function AdminGroupDetail() {
             <View style={styles.circleInner}>
               <Text style={styles.circleText}>{capacity > 0 ? Math.round((totalShares / capacity) * 100) : 0}%</Text>
             </View>
+          </View>
+        </View>
+
+        {/* Monthly Auctions Roadmap */}
+        <View style={styles.auctionsSection}>
+          <View style={styles.sectionHeaderRow}>
+            <Text style={styles.sectionTitle}>Auction Roadmap</Text>
+            <View style={styles.roadmapBadge}>
+              <Text style={styles.roadmapBadgeText}>
+                {group?.no_of_installments || group?.duration_months || 0} MONTHS
+              </Text>
+            </View>
+          </View>
+          
+          <View style={styles.timelineContainer}>
+            {deduplicatedAuctions.map((auction, idx) => {
+              const isCompleted = auction.status === 'completed';
+              const isLive = auction.status === 'live';
+              const isUpcoming = auction.status === 'upcoming';
+              const isScheduled = !!auction.scheduled_at;
+              const isLast = idx === deduplicatedAuctions.length - 1;
+              
+              let statusColor = '#CBD5E1';
+              if (isLive) statusColor = '#10B981';
+              else if (isCompleted) statusColor = '#005E7D';
+              else if (isScheduled) statusColor = '#F59E0B';
+
+              return (
+                <View key={auction.id} style={styles.timelineItem}>
+                  <View style={styles.timelineLeft}>
+                    <View style={[styles.timelineDot, { backgroundColor: statusColor, shadowColor: statusColor }]}>
+                      {isCompleted && <Svg width={12} height={12} viewBox="0 0 24 24" fill="#FFFFFF"><Path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z" /></Svg>}
+                      {isLive && <View style={styles.pulseDot} />}
+                    </View>
+                    {!isLast && <View style={[styles.timelineLine, { backgroundColor: isCompleted ? '#005E7D' : '#E2E8F0' }]} />}
+                  </View>
+
+                  <TouchableOpacity 
+                    style={[styles.timelineCard, isLive && styles.timelineCardLive, isCompleted && styles.timelineCardCompleted]}
+                    onPress={() => isCompleted ? openSettlementModal(auction) : handleOpenScheduleModal(auction)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.timelineCardHeader}>
+                      <View>
+                        <Text style={styles.timelineMonth}>Auction #{auction.auction_number}</Text>
+                        <Text style={styles.timelineStatus}>
+                          {isLive ? 'LIVE NOW' : isCompleted ? 'SETTLED' : isScheduled ? 'SCHEDULED' : 'PENDING SETUP'}
+                        </Text>
+                      </View>
+                      {isScheduled && !isCompleted && (
+                        <View style={styles.timeTag}>
+                          <Text style={styles.timeTagText}>{formatDate(auction.scheduled_at)}</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {isCompleted ? (
+                      <View style={styles.timelineSummary}>
+                        <View style={styles.summaryItem}>
+                          <Text style={styles.summaryLabel}>WINNER</Text>
+                          <Text style={styles.summaryVal} numberOfLines={1}>{auction.winner_name || 'Member'}</Text>
+                        </View>
+                        <View style={styles.summaryItem}>
+                          <Text style={styles.summaryLabel}>PRIZE</Text>
+                          <Text style={[styles.summaryVal, { color: '#10B981' }]}>{formatRupees(auction.prize_amount)}</Text>
+                        </View>
+                      </View>
+                    ) : (
+                      <View style={styles.timelineActions}>
+                        {isLive ? (
+                          <TouchableOpacity style={styles.timelineActionBtnLive} onPress={() => router.push('/(admin)/auctions/live')}>
+                            <Text style={styles.timelineActionBtnTextLive}>ENTER LIVE AUCTION →</Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <TouchableOpacity 
+                            style={[styles.timelineActionBtn, isScheduled && { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' }]} 
+                            onPress={() => handleOpenScheduleModal(auction)}
+                          >
+                            <Text style={[styles.timelineActionBtnText, isScheduled && { color: '#D97706' }]}>
+                              {isScheduled ? 'START AUCTION' : 'SET UP AUCTION'}
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
           </View>
         </View>
 
@@ -594,7 +1074,7 @@ export default function AdminGroupDetail() {
                       <View style={{ flex: 1 }}>
                         <Text style={styles.txTitleAlt}>Auction #{tx.auctions?.auction_number || '?'}</Text>
                         <Text style={styles.txDateAlt}>
-                          {new Date(tx.transaction_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })} • {new Date(tx.transaction_date).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                          {formatDate(new Date(tx.transaction_date))} • {formatTime(new Date(tx.transaction_date))}
                         </Text>
                       </View>
                       <View style={{ alignItems: 'flex-end' }}>
@@ -661,14 +1141,378 @@ export default function AdminGroupDetail() {
         </SafeAreaView>
       </Modal>
 
+      {/* --- AUCTION SETTLEMENT MODAL --- */}
+      <Modal visible={showSettlementModal} animationType="slide" presentationStyle="pageSheet">
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#FFFFFF' }}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setShowSettlementModal(false)} style={styles.closeBtn}>
+              <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
+                <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+              </Svg>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Set Auction Settlement</Text>
+            <View style={{ width: 40 }} />
+          </View>
+
+          <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
+            <Text style={styles.sectionTitle}>Winner Selection</Text>
+            {members.length === 0 ? (
+              <Text style={styles.emptyNote}>No members to select.</Text>
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
+                {members.map((m, idx) => {
+                  const name = m.customers?.full_name || `Member #${idx + 1}`;
+                  const isActive = settlementWinnerId === m.id;
+                  return (
+                    <TouchableOpacity
+                      key={m.id}
+                      style={[styles.auctionChip, isActive && styles.auctionChipActive]}
+                      onPress={() => setSettlementWinnerId(m.id)}
+                    >
+                      <Text style={[styles.auctionChipText, isActive && styles.auctionChipTextActive]}>{name}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            <Text style={styles.sectionTitle}>Auction Inputs</Text>
+            <View style={styles.settlementGrid}>
+              <View style={styles.settlementField}>
+                <Text style={styles.settlementLabel}>Monthly Installment</Text>
+                <TextInput
+                  style={styles.searchInput}
+                  keyboardType="numeric"
+                  value={settlementInstallment}
+                  editable={false}
+                />
+              </View>
+              <View style={styles.settlementField}>
+                <Text style={styles.settlementLabel}>Bid Amount (Discount)</Text>
+                <TextInput
+                  style={styles.searchInput}
+                  keyboardType="numeric"
+                  value={settlementDiscount}
+                  onChangeText={setSettlementDiscount}
+                  placeholder="0"
+                />
+              </View>
+              <View style={styles.settlementField}>
+                <Text style={styles.settlementLabel}>Dividend per Person (Net)</Text>
+                <TextInput
+                  style={styles.searchInput}
+                  keyboardType="numeric"
+                  value={settlementDividend}
+                  editable={false}
+                />
+              </View>
+              <View style={styles.settlementField}>
+                <Text style={styles.settlementLabel}>Payable Installment</Text>
+                <TextInput
+                  style={styles.searchInput}
+                  keyboardType="numeric"
+                  value={settlementFinalDue}
+                  editable={false}
+                />
+              </View>
+              <View style={styles.settlementField}>
+                <Text style={styles.settlementLabel}>Monthly Savings (%)</Text>
+                <TextInput
+                  style={styles.searchInput}
+                  keyboardType="numeric"
+                  value={settlementSavings}
+                  editable={false}
+                />
+              </View>
+              <View style={styles.settlementField}>
+                <Text style={styles.settlementLabel}>Bidder Get (Prize)</Text>
+                <TextInput
+                  style={styles.searchInput}
+                  keyboardType="numeric"
+                  value={settlementPrize}
+                  editable={false}
+                />
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={[styles.executeBtn, { flex: 0, marginTop: 16 }, savingSettlement && { opacity: 0.7 }]}
+              onPress={handleSaveSettlement}
+              disabled={savingSettlement}
+            >
+              {savingSettlement
+                ? <ActivityIndicator color="#0F172A" />
+                : <Text style={styles.executeBtnText}>SAVE SETTLEMENT</Text>
+              }
+            </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* --- AUCTION PREP CENTER (STEPPED MODAL) --- */}
+      <Modal 
+        visible={showScheduleModal} 
+        animationType="slide" 
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowScheduleModal(false)}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#F8FAFC' }}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setShowScheduleModal(false)} style={styles.closeBtn}>
+              <Svg width={24} height={24} viewBox="0 0 24 24" fill="#64748B">
+                <Path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+              </Svg>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Auction Prep Center</Text>
+            <View style={{ width: 40 }} />
+          </View>
+
+          {/* Stepper Header */}
+          <View style={styles.stepperContainer}>
+            {[1, 2, 3].map((s) => (
+              <React.Fragment key={s}>
+                <View style={[styles.stepCircle, prepStep >= s && styles.stepCircleActive]}>
+                  <Text style={[styles.stepNum, prepStep >= s && styles.stepNumActive]}>{s}</Text>
+                </View>
+                {s < 3 && <View style={[styles.stepLine, prepStep > s && styles.stepLineActive]} />}
+              </React.Fragment>
+            ))}
+          </View>
+
+          <ScrollView contentContainerStyle={{ padding: 24 }}>
+            {prepStep === 1 && (
+              <View>
+                <Text style={styles.prepStepTitle}>Step 1: Timing & Schedule</Text>
+                <Text style={styles.prepStepSub}>Configure the window for this auction session.</Text>
+                
+                <View style={styles.prepCard}>
+                  <Text style={styles.schedulingFieldLabel}>AUCTION START</Text>
+                  <View style={{ flexDirection: 'row', gap: 12 }}>
+                    <TouchableOpacity style={[styles.searchInput, { flex: 1 }]} onPress={() => openDatePickerForPrep('scheduled')}>
+                      <Text style={styles.pickerPreviewLabel}>Date</Text>
+                      <Text style={styles.pickerPreviewVal}>{formatDate(tempScheduledAt)}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.searchInput, { flex: 1 }]} onPress={() => openTimePickerForPrep('scheduled')}>
+                      <Text style={styles.pickerPreviewLabel}>Time</Text>
+                      <Text style={styles.pickerPreviewVal}>{formatTime(tempScheduledAt)}</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <Text style={[styles.schedulingFieldLabel, { marginTop: 24 }]}>AUCTION CLOSE</Text>
+                  <View style={{ flexDirection: 'row', gap: 12 }}>
+                    <TouchableOpacity style={[styles.searchInput, { flex: 1 }]} onPress={() => openDatePickerForPrep('closes')}>
+                      <Text style={styles.pickerPreviewLabel}>Date</Text>
+                      <Text style={styles.pickerPreviewVal}>{formatDate(tempClosesAt)}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[styles.searchInput, { flex: 1 }]} onPress={() => openTimePickerForPrep('closes')}>
+                      <Text style={styles.pickerPreviewLabel}>Time</Text>
+                      <Text style={styles.pickerPreviewVal}>{formatTime(tempClosesAt)}</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <TouchableOpacity style={styles.nextStepBtn} onPress={() => setPrepStep(2)}>
+                  <Text style={styles.nextStepBtnText}>Next: Bid Parameters</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {prepStep === 2 && (
+              <View>
+                <Text style={styles.prepStepTitle}>Step 2: Financial Parameters</Text>
+                <Text style={styles.prepStepSub}>Define the bidding boundaries for members.</Text>
+                
+                <View style={styles.prepCard}>
+                  <View style={styles.prepRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.schedulingFieldLabel}>MIN BID (DISCOUNT)</Text>
+                      <TextInput style={styles.searchInput} keyboardType="numeric" value={tempMinBid} onChangeText={setTempMinBid} placeholder="0" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.schedulingFieldLabel}>MAX BID (DISCOUNT)</Text>
+                      <TextInput style={styles.searchInput} keyboardType="numeric" value={tempMaxBid} onChangeText={setTempMaxBid} placeholder="0" />
+                    </View>
+                  </View>
+
+                  <View style={styles.calculationBox}>
+                    <Text style={styles.calcLabel}>Estimated Prize for Winner</Text>
+                    <Text style={styles.calcVal}>{formatRupees((group?.value || 0) - (Number(tempMaxBid) * 100))}</Text>
+                    <Text style={styles.calcNote}>Based on current Max Discount</Text>
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: 'row', gap: 12 }}>
+                  <TouchableOpacity style={[styles.nextStepBtn, { backgroundColor: '#CBD5E1', flex: 1 }]} onPress={() => setPrepStep(1)}>
+                    <Text style={[styles.nextStepBtnText, { color: '#475569' }]}>Back</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.nextStepBtn, { flex: 2 }]} onPress={() => setPrepStep(3)}>
+                    <Text style={styles.nextStepBtnText}>Next: Review & Launch</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {prepStep === 3 && (
+              <View>
+                <Text style={styles.prepStepTitle}>Step 3: Review & Activate</Text>
+                <Text style={styles.prepStepSub}>Final check before taking the auction LIVE.</Text>
+                
+                <View style={styles.prepCard}>
+                  <View style={styles.reviewItem}>
+                    <Text style={styles.reviewLabel}>Scheduled For</Text>
+                    <Text style={styles.reviewVal}>{formatDate(tempScheduledAt)} at {formatTime(tempScheduledAt)}</Text>
+                  </View>
+                  <View style={styles.reviewItem}>
+                    <Text style={styles.reviewLabel}>Bid Range</Text>
+                    <Text style={styles.reviewVal}>₹{Number(tempMinBid).toLocaleString()} - ₹{Number(tempMaxBid).toLocaleString()}</Text>
+                  </View>
+                  <View style={styles.reviewItem}>
+                    <Text style={styles.reviewLabel}>Duration</Text>
+                    <Text style={styles.reviewVal}>
+                      {Math.round((tempClosesAt.getTime() - tempScheduledAt.getTime()) / 60000)} Minutes
+                    </Text>
+                  </View>
+
+                  <View style={styles.warningBox}>
+                    <Svg width={16} height={16} viewBox="0 0 24 24" fill="#B45309">
+                      <Path d="M12 2L1 21h22L12 2zm0 3.45l8.28 14.55H3.72L12 5.45zM11 16h2v2h-2v-2zm0-7h2v5h-2V9z" />
+                    </Svg>
+                    <Text style={styles.warningText}>Once started, the auction will be visible to all members.</Text>
+                  </View>
+                </View>
+
+                <View style={{ gap: 12 }}>
+                  <TouchableOpacity 
+                    style={[styles.launchBtn, { backgroundColor: '#005E7D' }]} 
+                    onPress={() => handleSaveSchedule(false)}
+                    disabled={isValidatingSchedule}
+                  >
+                    <Text style={styles.launchBtnText}>SAVE AS SCHEDULED</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity 
+                    style={[styles.launchBtn, { backgroundColor: '#10B981' }]} 
+                    onPress={() => {
+                      Alert.alert("Go Live", "This will activate the auction floor immediately. Proceed?", [
+                        { text: "Cancel", style: "cancel" },
+                        { text: "LAUNCH LIVE NOW", onPress: () => handleSaveSchedule(true) }
+                      ]);
+                    }}
+                    disabled={isValidatingSchedule}
+                  >
+                    {isValidatingSchedule ? <ActivityIndicator color="#FFF" /> : <Text style={styles.launchBtnText}>ACTIVATE LIVE AUCTION</Text>}
+                  </TouchableOpacity>
+
+                  <TouchableOpacity onPress={() => setPrepStep(2)} style={{ alignSelf: 'center', marginTop: 12 }}>
+                    <Text style={{ color: '#64748B', fontFamily: 'Inter_600SemiBold', fontSize: 13 }}>Modify Parameters</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </ScrollView>
+        {showDatePicker && Platform.OS === 'ios' && (
+          <View style={styles.pickerOverlay}>
+            <View style={styles.pickerSheet}>
+              <View style={{ height: 216, justifyContent: 'center' }}>
+                <DateTimePicker
+                  value={pendingDateValue}
+                  mode="date"
+                  display="inline"
+                  onChange={handleDateChange}
+                  textColor="#0B1C30"
+                  themeVariant="light"
+                  style={{ height: 216, alignSelf: 'stretch', backgroundColor: '#FFFFFF' }}
+                />
+              </View>
+              <View style={styles.pickerActions}>
+                <TouchableOpacity style={[styles.pickerCancelBtn, { flex: 1 }]} onPress={() => setShowDatePicker(false)}>
+                  <Text style={styles.pickerCancelText}>CANCEL</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.pickerSaveBtn, { flex: 1 }]}
+                  onPress={() => {
+                    applyDateValue(pendingDateValue);
+                    setShowDatePicker(false);
+                  }}
+                >
+                  <Text style={styles.pickerSaveText}>DONE</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {showTimePicker && Platform.OS === 'ios' && (
+          <View style={styles.pickerOverlay}>
+            <View style={styles.pickerSheet}>
+              <View style={{ height: 216, justifyContent: 'center' }}>
+                <DateTimePicker
+                  value={pendingTimeValue}
+                  mode="time"
+                  display="spinner"
+                  onChange={handleTimeChange}
+                  textColor="#0B1C30"
+                  themeVariant="light"
+                  style={{ height: 216, alignSelf: 'stretch', backgroundColor: '#FFFFFF' }}
+                />
+              </View>
+              <View style={styles.pickerActions}>
+                <TouchableOpacity style={[styles.pickerCancelBtn, { flex: 1 }]} onPress={() => setShowTimePicker(false)}>
+                  <Text style={styles.pickerCancelText}>CANCEL</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.pickerSaveBtn, { flex: 1 }]}
+                  onPress={() => {
+                    applyTimeValue(pendingTimeValue);
+                    setShowTimePicker(false);
+                  }}
+                >
+                  <Text style={styles.pickerSaveText}>DONE</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        )}
+
+        {showDatePicker && Platform.OS === 'android' && (
+          <DateTimePicker
+            value={currentDateValue}
+            mode="date"
+            display="default"
+            onChange={handleDateChange}
+          />
+        )}
+        {showTimePicker && Platform.OS === 'android' && (
+          <DateTimePicker
+            value={currentTimeValue}
+            mode="time"
+            display="default"
+            onChange={handleTimeChange}
+          />
+        )}
+        </SafeAreaView>
+      </Modal>
+
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F8F9FF' },
-  appBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, height: 64, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
-  backBtn: { padding: 8, marginRight: 8 },
+  appBar: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 16, height: 64, backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1, borderBottomColor: '#F1F5F9',
+  },
+  avatarContainer: {
+    width: 32,
+    height: 32,
+    marginRight: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatar: { width: '100%', height: '100%' },
+  backBtn: { padding: 8, marginLeft: -8 },
   headerTitleBox: { flex: 1 },
   appBarTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0F172A' },
   appBarSubtitle: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B' },
@@ -700,6 +1544,15 @@ const styles = StyleSheet.create({
   circleText: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#0B1C30' },
   membersSection: { marginBottom: 24 },
   sectionTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 16, color: '#164E63', marginBottom: 16, marginLeft: 4 },
+  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  sectionHelper: { fontFamily: 'Inter_400Regular', fontSize: 11, color: '#94A3B8' },
+  sectionAction: { backgroundColor: '#E0F2FE', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 100 },
+  sectionActionText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#005E7D', letterSpacing: 0.6 },
+  emptyNote: { fontFamily: 'Inter_400Regular', color: '#94A3B8', textAlign: 'center', marginTop: 8 },
+  emptyCard: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#F1F5F9', alignItems: 'center' },
+  emptyTitle: { fontFamily: 'SpaceGrotesk_600SemiBold', fontSize: 14, color: '#0B1C30', marginBottom: 6 },
+  createAuctionBtn: { marginTop: 14, backgroundColor: '#00D1C1', paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12 },
+  createAuctionBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#0F172A', letterSpacing: 0.6 },
   memberCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFFFFF', padding: 16, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#F1F5F9' },
   memberInfo: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
   avatarMini: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center' },
@@ -749,4 +1602,144 @@ const styles = StyleSheet.create({
   auctionChipActive: { backgroundColor: '#F0F9FF', borderColor: '#005E7D' },
   auctionChipText: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#64748B' },
   auctionChipTextActive: { color: '#005E7D' },
+
+  auctionsSection: { marginBottom: 24 },
+  auctionCard: { backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#F1F5F9', marginBottom: 12 },
+  auctionCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  auctionTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 15, color: '#0B1C30' },
+  auctionSub: { fontFamily: 'Inter_400Regular', fontSize: 11, color: '#64748B', marginTop: 4 },
+  auctionBadge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 100, backgroundColor: '#F1F5F9' },
+  auctionBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#0B1C30', letterSpacing: 0.5 },
+  auctionGrid: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
+  auctionMetaLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#94A3B8', letterSpacing: 0.6 },
+  auctionMetaVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 13, color: '#0B1C30', marginTop: 4 },
+  auctionWinnerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 10, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  auctionWinnerLabel: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#94A3B8' },
+  auctionWinnerName: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#0B1C30', flex: 1, marginLeft: 12 },
+  auctionWinnerPrize: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 12, color: '#10B981' },
+
+  settlementGrid: { gap: 12 },
+  settlementField: { gap: 6 },
+  settlementLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#64748B', letterSpacing: 0.4 },
+
+  monthGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  monthChip: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0' },
+  monthChipActive: { backgroundColor: '#E0F2FE', borderColor: '#38BDF8' },
+  monthChipText: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#64748B' },
+  monthChipTextActive: { color: '#0B1C30' },
+  pickerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(15, 23, 42, 0.4)',
+    justifyContent: 'flex-end',
+    zIndex: 200,
+  },
+  pickerSheet: {
+    backgroundColor: '#FFFFFF',
+    padding: 16,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+  },
+  pickerActions: { flexDirection: 'row', gap: 12, marginTop: 12 },
+  pickerCancelBtn: {
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerCancelText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#64748B', letterSpacing: 0.6 },
+  pickerSaveBtn: {
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#005E7D',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pickerSaveText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 0.6 },
+
+  editBtnSmall: { backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
+  editBtnTextSmall: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#64748B' },
+  winnerRow: { flexDirection: 'row', alignItems: 'center', paddingTop: 10, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  winnerLabel: { fontFamily: 'Inter_500Medium', fontSize: 11, color: '#94A3B8' },
+  winnerName: { fontFamily: 'Inter_600SemiBold', fontSize: 12, color: '#0B1C30', flex: 1, marginLeft: 12 },
+  winnerAmount: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 12 },
+  startAuctionBtn: { backgroundColor: '#0F172A', paddingVertical: 12, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  startAuctionBtnText: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 0.6 },
+  healthLeft: { flex: 1 },
+  healthTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 18, color: '#0B1C30', marginBottom: 4 },
+  healthSub: { fontFamily: 'Inter_500Medium', fontSize: 13, color: '#64748B' },
+  healthLegendRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  legendDot: { width: 10, height: 10, borderRadius: 5 },
+  legendText: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#64748B' },
+  progressCircle: { width: 100, height: 100, position: 'relative', alignItems: 'center', justifyContent: 'center' },
+  circleInner: { position: 'absolute', alignItems: 'center', justifyContent: 'center' },
+  circleText: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#0B1C30' },
+  schedulingFieldLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#94A3B8', letterSpacing: 0.8, marginBottom: 8, marginTop: 12 },
+
+  roadmapBadge: { backgroundColor: '#F1F5F9', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  roadmapBadgeText: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#64748B' },
+  timelineContainer: { paddingLeft: 8, marginTop: 16 },
+  timelineItem: { flexDirection: 'row', minHeight: 120 },
+  timelineLeft: { width: 40, alignItems: 'center' },
+  timelineDot: { 
+    width: 24, height: 24, borderRadius: 12, 
+    alignItems: 'center', justifyContent: 'center', zIndex: 2,
+    borderWidth: 4, borderColor: '#FFFFFF',
+    shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 4
+  },
+  pulseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#FFFFFF' },
+  timelineLine: { width: 2, flex: 1, marginTop: -2, marginBottom: -2, zIndex: 1 },
+  timelineCard: { 
+    flex: 1, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 16, marginBottom: 20, marginLeft: 8,
+    borderWidth: 1, borderColor: '#F1F5F9',
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.03, shadowRadius: 10, elevation: 1
+  },
+  timelineCardLive: { borderColor: '#10B981', backgroundColor: '#F0FDF4', borderLeftWidth: 4, borderLeftColor: '#10B981' },
+  timelineCardCompleted: { backgroundColor: '#F8FAFC' },
+  timelineCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
+  timelineMonth: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 16, color: '#0B1C30' },
+  timelineStatus: { fontFamily: 'Inter_700Bold', fontSize: 10, color: '#94A3B8', marginTop: 2, letterSpacing: 0.5 },
+  timeTag: { backgroundColor: '#FFFBEB', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#FEF3C7' },
+  timeTagText: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#D97706' },
+  timelineSummary: { flexDirection: 'row', gap: 24, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
+  summaryItem: { flex: 1 },
+  summaryLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 9, color: '#94A3B8', letterSpacing: 0.6 },
+  summaryVal: { fontFamily: 'Inter_700Bold', fontSize: 13, color: '#0B1C30', marginTop: 2 },
+  timelineActions: { marginTop: 8 },
+  timelineActionBtn: { 
+    paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: '#E2E8F0', 
+    alignItems: 'center', justifyContent: 'center' 
+  },
+  timelineActionBtnText: { fontFamily: 'Inter_700Bold', fontSize: 11, color: '#64748B', letterSpacing: 0.5 },
+  timelineActionBtnLive: { backgroundColor: '#10B981', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
+  timelineActionBtnTextLive: { fontFamily: 'Inter_700Bold', fontSize: 12, color: '#FFFFFF', letterSpacing: 0.5 },
+
+  stepperContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 16, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  stepCircle: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F1F5F9', alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#E2E8F0' },
+  stepCircleActive: { backgroundColor: '#005E7D', borderColor: '#005E7D' },
+  stepNum: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#94A3B8' },
+  stepNumActive: { color: '#FFFFFF' },
+  stepLine: { width: 40, height: 2, backgroundColor: '#E2E8F0', marginHorizontal: 8 },
+  stepLineActive: { backgroundColor: '#005E7D' },
+
+  prepStepTitle: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 20, color: '#0B1C30', marginBottom: 4 },
+  prepStepSub: { fontFamily: 'Inter_500Medium', fontSize: 14, color: '#64748B', marginBottom: 24 },
+  prepCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20, marginBottom: 24, borderWidth: 1, borderColor: '#F1F5F9' },
+  prepRow: { flexDirection: 'row', gap: 12 },
+  pickerPreviewLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 10, color: '#94A3B8', marginBottom: 4 },
+  pickerPreviewVal: { fontFamily: 'Inter_600SemiBold', fontSize: 14, color: '#0B1C30' },
+  calculationBox: { marginTop: 24, padding: 16, backgroundColor: '#F0F9FF', borderRadius: 12, alignItems: 'center' },
+  calcLabel: { fontFamily: 'Inter_500Medium', fontSize: 12, color: '#0369A1' },
+  calcVal: { fontFamily: 'SpaceGrotesk_700Bold', fontSize: 24, color: '#0369A1', marginVertical: 4 },
+  calcNote: { fontFamily: 'Inter_400Regular', fontSize: 11, color: '#38BDF8' },
+  nextStepBtn: { backgroundColor: '#0F172A', paddingVertical: 16, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 12 },
+  nextStepBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#FFFFFF' },
+  reviewItem: { marginBottom: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#F8FAFC' },
+  reviewLabel: { fontFamily: 'Inter_600SemiBold', fontSize: 11, color: '#94A3B8', marginBottom: 4 },
+  reviewVal: { fontFamily: 'Inter_600SemiBold', fontSize: 16, color: '#0B1C30' },
+  warningBox: { flexDirection: 'row', gap: 10, backgroundColor: '#FFFBEB', padding: 12, borderRadius: 10, marginTop: 12 },
+  warningText: { flex: 1, fontFamily: 'Inter_500Medium', fontSize: 12, color: '#92400E' },
+  launchBtn: { paddingVertical: 16, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  launchBtnText: { fontFamily: 'Inter_700Bold', fontSize: 14, color: '#FFFFFF', letterSpacing: 0.5 },
 });
